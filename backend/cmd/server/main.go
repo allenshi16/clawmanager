@@ -89,7 +89,7 @@ func main() {
 	riskDetectionService := services.NewRiskDetectionService(riskRuleRepo)
 	riskHitService := services.NewRiskHitService(riskHitRepo)
 	riskRuleService := services.NewRiskRuleService(riskRuleRepo)
-	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo)
+	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo, skillRepo)
 	objectStorageService, err := services.NewObjectStorageService(cfg.ObjectStorage)
 	if err != nil {
 		log.Fatalf("Failed to initialize object storage: %v", err)
