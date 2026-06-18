@@ -11,7 +11,6 @@ type Instance struct {
 	Name                     string     `db:"name" json:"name"`
 	Description              *string    `db:"description" json:"description,omitempty"`
 	Type                     string     `db:"type" json:"type"`
-	RuntimeType              string     `db:"runtime_type" json:"runtime_type"`
 	Status                   string     `db:"status" json:"status"`
 	CPUCores                 float64    `db:"cpu_cores" json:"cpu_cores"`
 	MemoryGB                 int        `db:"memory_gb" json:"memory_gb"`
@@ -33,6 +32,8 @@ type Instance struct {
 	AccessToken              *string    `db:"access_token" json:"-"`
 	AgentBootstrapToken      *string    `db:"agent_bootstrap_token" json:"-"`
 	OpenClawConfigSnapshotID *int       `db:"openclaw_config_snapshot_id" json:"openclaw_config_snapshot_id,omitempty"`
+	VariantID                *int       `db:"variant_id" json:"variant_id,omitempty"`
+	VariantVersion           *int       `db:"variant_version" json:"variant_version,omitempty"`
 	CreatedAt                time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt                time.Time  `db:"updated_at" json:"updated_at"`
 	StartedAt                *time.Time `db:"started_at" json:"started_at,omitempty"`

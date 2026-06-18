@@ -15,6 +15,8 @@ import type {
   RuntimeStatus,
 } from "../../types/instance";
 import type { InstanceSkill, Skill } from "../../types/skill";
+import { Loader2 } from "lucide-react";
+import type { UpgradeCheckResult } from "../../types/agentVariant";
 
 const META_POLL_INTERVAL_MS = 8000;
 const RUNTIME_POLL_INTERVAL_MS = 5000;
@@ -95,19 +97,6 @@ type MetricCurve = {
   secondaryPoints?: MetricSample[];
   legend?: Array<{ label: string; accent: string }>;
   preNormalized?: boolean;
-};
-
-type CpuInfo = {
-  cores?: number;
-  available_cores?: number;
-  usage_percent?: number;
-  used_cores?: number;
-  usage_ready?: boolean;
-  load?: {
-    "1m"?: number;
-    "5m"?: number;
-    "15m"?: number;
-  };
 };
 
 type TranslateFn = (
@@ -433,12 +422,7 @@ const InstanceDetailPage: React.FC = () => {
       return;
     }
 
-    const reportedTimestamp = runtimeDetails?.runtime?.last_reported_at
-      ? new Date(runtimeDetails.runtime.last_reported_at).getTime()
-      : Date.now();
-    const ts = Number.isFinite(reportedTimestamp)
-      ? reportedTimestamp
-      : Date.now();
+    const ts = Date.now();
     const previousNetwork = lastNetworkCounterRef.current;
     let networkDownSample: number | null = null;
     let networkUpSample: number | null = null;
@@ -792,9 +776,6 @@ const InstanceDetailPage: React.FC = () => {
                 <span className="rounded-full border border-[#ead8cf] bg-[#fffaf7] px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-[#8f776b]">
                   {instance.type}
                 </span>
-                <span className="rounded-full border border-[#dbe4ef] bg-[#f7fbff] px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-[#516070]">
-                  {instance.runtime_type || "desktop"}
-                </span>
                 <span className="text-sm text-[#7a6d66]">
                   {t("instances.instanceIdLabel")}: {instance.id}
                 </span>
@@ -844,6 +825,15 @@ const InstanceDetailPage: React.FC = () => {
                   ? `${t("common.restart")}...`
                   : t("common.restart")}
               </button>
+              {effectiveInstanceStatus === "running" &&
+                (instance.type === "openclaw" || instance.type === "hermes") && (
+                  <button
+                    onClick={() => navigate(`/instances/${instance.id}/chat`)}
+                    className="rounded-2xl border border-transparent bg-blue-100 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-200"
+                  >
+                    Chat
+                  </button>
+                )}
               <button
                 onClick={() => setShowDeleteDialog(true)}
                 disabled={actionLoading === "delete"}
@@ -865,9 +855,8 @@ const InstanceDetailPage: React.FC = () => {
                   instanceId={instance.id}
                   instanceName={instance.name}
                   isRunning={effectiveInstanceStatus === "running"}
-                  runtimeType={instance.runtime_type || "desktop"}
                   overlay={
-                    instance.runtime_type !== "shell" && instance.type === "openclaw"
+                    instance.type === "openclaw"
                       ? {
                           gatewayStatus,
                           canControl: canControlGateway,
@@ -1304,6 +1293,10 @@ const InstanceDetailPage: React.FC = () => {
                   />
                 </dl>
               </div>
+
+              {instance.variant_id && (
+                <VariantUpgradeCard instance={instance} />
+              )}
             </section>
           </aside>
         </div>
@@ -1311,6 +1304,82 @@ const InstanceDetailPage: React.FC = () => {
     </UserLayout>
   );
 };
+
+function VariantUpgradeCard({ instance }: { instance: Instance }) {
+  const [checkResult, setCheckResult] = useState<UpgradeCheckResult | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    instanceService.upgradeCheck(instance.id)
+      .then((r) => { if (!cancelled) setCheckResult(r); })
+      .catch(() => { if (!cancelled) setCheckResult({ instance_id: instance.id, upgrade_available: false } as UpgradeCheckResult); })
+      .finally(() => { if (!cancelled) setChecking(false); });
+    return () => { cancelled = true; };
+  }, [instance.id]);
+
+  const handleUpgrade = async () => {
+    setUpgrading(true);
+    setUpgradeError(null);
+    try {
+      await instanceService.upgradeInstance(instance.id);
+      setCheckResult((prev) => prev ? { ...prev, current_version: prev.latest_version, upgrade_available: false } : null);
+    } catch (err: any) {
+      setUpgradeError(err.response?.data?.error || 'Upgrade failed');
+    } finally {
+      setUpgrading(false);
+    }
+  };
+
+  return (
+    <div className="mt-5 rounded-[24px] border border-[#ead8cf] bg-white/82 p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#b46c50]">
+        Template
+      </p>
+      {checking ? (
+        <div className="mt-2 flex items-center gap-2 text-sm text-[#7a6d66]">
+          <Loader2 className="animate-spin" size={14} />
+          Checking for upgrades...
+        </div>
+      ) : checkResult ? (
+        <div className="mt-2 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-[#7a6d66]">Version</span>
+            <span className="font-medium text-[#1d1713]">
+              {checkResult.current_version ?? '-'}
+              {checkResult.latest_version != null && checkResult.latest_version !== checkResult.current_version && (
+                <span className="text-[#b46c50]"> → {checkResult.latest_version}</span>
+              )}
+            </span>
+          </div>
+          {checkResult.upgrade_available && (
+            <>
+              <button
+                onClick={handleUpgrade}
+                disabled={upgrading}
+                className="w-full mt-2 rounded-xl bg-[linear-gradient(135deg,#ef6b4a_0%,#dc2626_100%)] px-4 py-2 text-sm font-semibold text-white hover:translate-y-[-1px] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {upgrading ? (
+                  <><Loader2 className="animate-spin" size={14} /> Upgrading...</>
+                ) : (
+                  'Upgrade to Latest'
+                )}
+              </button>
+              {upgradeError && (
+                <p className="text-xs text-red-500 mt-1">{upgradeError}</p>
+              )}
+            </>
+          )}
+          {!checkResult.upgrade_available && checkResult.current_version != null && (
+            <p className="text-xs text-green-600 mt-1">Up to date</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function SummaryMetricCard({ label, value }: { label: string; value: string }) {
   return (
@@ -1886,66 +1955,6 @@ function percentLabel(value: number | null, t: TranslateFn): string {
   return `${Math.round(value)}%`;
 }
 
-function clampPercent(value: number) {
-  return Math.max(0, Math.min(100, value));
-}
-
-function getCpuUsagePercent(cpu?: CpuInfo): number | null {
-  if (!cpu) {
-    return null;
-  }
-
-  if (
-    cpu.usage_ready !== false &&
-    typeof cpu.usage_percent === "number" &&
-    Number.isFinite(cpu.usage_percent)
-  ) {
-    return clampPercent(cpu.usage_percent);
-  }
-
-  return null;
-}
-
-function asCpuInfo(value: unknown): CpuInfo | undefined {
-  const record = asRecord(value);
-  return record as CpuInfo | undefined;
-}
-
-function formatLoadValue(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value.toFixed(2)
-    : "-";
-}
-
-function buildCpuDetail(cpu: CpuInfo | undefined, t: TranslateFn): string {
-  if (!cpu) {
-    return t("instances.notAvailable");
-  }
-
-  const details = [
-    typeof cpu.used_cores === "number" &&
-    Number.isFinite(cpu.used_cores) &&
-    typeof cpu.available_cores === "number" &&
-    Number.isFinite(cpu.available_cores)
-      ? t("instances.metricCpuUsedCoresDetail", {
-          used: cpu.used_cores.toFixed(2),
-          available: `${cpu.available_cores}`,
-        })
-      : typeof cpu.cores === "number" && Number.isFinite(cpu.cores)
-        ? t("instances.metricCpuCoresDetail", { cores: cpu.cores })
-        : null,
-    cpu.load
-      ? t("instances.metricCpuLoadDetail", {
-          load1: formatLoadValue(cpu.load["1m"]),
-          load5: formatLoadValue(cpu.load["5m"]),
-          load15: formatLoadValue(cpu.load["15m"]),
-        })
-      : null,
-  ].filter(Boolean);
-
-  return details.length > 0 ? details.join(" · ") : t("instances.notAvailable");
-}
-
 function buildMetricCurves({
   cpuInfo,
   memoryInfo,
@@ -1963,8 +1972,14 @@ function buildMetricCurves({
   sessionStartedAt: number;
   t: TranslateFn;
 }): MetricCurve[] {
-  const cpu = asCpuInfo(cpuInfo);
-  const cpuCurrent = getCpuUsagePercent(cpu);
+  const cores = getNumber(cpuInfo?.cores) || 1;
+  const cpuLoad = asRecord(cpuInfo?.load);
+  const cpuPoints = [
+    Math.min(((getNumber(cpuLoad?.["15m"]) || 0) / cores) * 100, 100),
+    Math.min(((getNumber(cpuLoad?.["5m"]) || 0) / cores) * 100, 100),
+    Math.min(((getNumber(cpuLoad?.["1m"]) || 0) / cores) * 100, 100),
+  ];
+  const cpuCurrent = cpuPoints[cpuPoints.length - 1] ?? 0;
 
   const memTotal = getNumber(memoryInfo?.mem_total_bytes);
   const memAvailable = getNumber(memoryInfo?.mem_available_bytes);
@@ -2045,11 +2060,13 @@ function buildMetricCurves({
   return [
     {
       label: t("instances.metricCpu"),
-      value:
-        cpuCurrent === null
-          ? t("instances.metricCpuSampling")
-          : `${cpuCurrent.toFixed(0)}%`,
-      detail: buildCpuDetail(cpu, t),
+      value: percentLabel(cpuCurrent, t),
+      detail: t("instances.metricCpuDetail", {
+        cores,
+        load1: formatNumber(getNumber(cpuLoad?.["1m"]), t),
+        load5: formatNumber(getNumber(cpuLoad?.["5m"]), t),
+        load15: formatNumber(getNumber(cpuLoad?.["15m"]), t),
+      }),
       accent: "#f97316",
       points: cpuSeries,
     },
@@ -2278,6 +2295,13 @@ function normalizePoints(points: number[]): number[] {
   return safe.map((point) => Math.max(point / max, 0.08));
 }
 
+function formatNumber(value: number | null, t: TranslateFn): string {
+  if (value === null) {
+    return t("instances.notAvailable");
+  }
+  return value.toFixed(2);
+}
+
 function formatBytesCompact(value: number | null, t: TranslateFn): string {
   if (value === null) {
     return t("instances.notAvailable");
@@ -2361,8 +2385,13 @@ function extractMetricSnapshot(systemInfoValue: unknown) {
     return null;
   }
 
-  const cpuInfo = asCpuInfo(systemInfo.cpu);
-  const cpuPercent = getCpuUsagePercent(cpuInfo);
+  const cpuInfo = asRecord(systemInfo.cpu);
+  const cpuLoad = asRecord(cpuInfo?.load);
+  const cores = getNumber(cpuInfo?.cores) || 1;
+  const cpuPercent = Math.min(
+    (((getNumber(cpuLoad?.["1m"]) || 0) / cores) * 100) || 0,
+    100,
+  );
 
   const memoryInfo = asRecord(systemInfo.memory);
   const memTotal = getNumber(memoryInfo?.mem_total_bytes);

@@ -53,32 +53,6 @@ const mergeInstances = (current: Instance[], incoming: Instance[]) => {
   });
 };
 
-const INSTANCE_LIST_PAGE_SIZE = 100;
-
-const instanceTimeValue = (instance: Instance) => {
-  const value = Date.parse(instance.created_at || instance.updated_at || '');
-  return Number.isFinite(value) ? value : 0;
-};
-
-const sortInstances = (items: Instance[]) =>
-  [...items].sort(
-    (left, right) => instanceTimeValue(right) - instanceTimeValue(left) || right.id - left.id,
-  );
-
-const loadAllInstances = async () => {
-  const firstPage = await instanceService.getInstances(1, INSTANCE_LIST_PAGE_SIZE);
-  const instances = [...(firstPage.instances || [])];
-  const total = firstPage.total || instances.length;
-  const totalPages = Math.ceil(total / INSTANCE_LIST_PAGE_SIZE);
-
-  for (let page = 2; page <= totalPages; page += 1) {
-    const nextPage = await instanceService.getInstances(page, INSTANCE_LIST_PAGE_SIZE);
-    instances.push(...(nextPage.instances || []));
-  }
-
-  return sortInstances(instances);
-};
-
 interface InstanceItemProps {
   instance: Instance;
   actionLoading: number | null;
@@ -279,8 +253,8 @@ const InstanceListPage: React.FC = () => {
         setLoading(true);
       }
       setError(null);
-      const data = await loadAllInstances();
-      setInstances((prevInstances) => mergeInstances(prevInstances, data));
+      const data = await instanceService.getInstances();
+      setInstances((prevInstances) => mergeInstances(prevInstances, data.instances));
     } catch (err: any) {
       setError(err.response?.data?.error || t('instances.failedToLoad'));
     } finally {

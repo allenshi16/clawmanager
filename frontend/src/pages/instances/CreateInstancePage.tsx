@@ -9,7 +9,12 @@ import { useAuth } from "../../contexts/AuthContext";
 import { instanceService } from "../../services/instanceService";
 import { skillService } from "../../services/skillService";
 import { userService } from "../../services/userService";
-import { INSTANCE_TYPES, PRESET_CONFIGS } from "../../types/instance";
+import {
+  INSTANCE_TYPES,
+  PRESET_CONFIGS,
+  SHELL_PRESET_CONFIGS,
+  type PresetKey,
+} from "../../types/instance";
 import type { CreateInstanceRequest } from "../../types/instance";
 import type { Instance } from "../../types/instance";
 import type { OpenClawConfigCompilePreview } from "../../types/openclawConfig";
@@ -44,6 +49,7 @@ const BYTES_PER_GIB = 1024 * 1024 * 1024;
 const AGENT_PROTOCOL_VERSION = "v1";
 const CUSTOM_RESOURCE_PRESET = "custom";
 const SKILLS_PER_PAGE = 6;
+
 const supportsRuntimeInjection = (type: string) =>
   type === "openclaw" || type === "hermes";
 
@@ -373,7 +379,7 @@ const getPresetDescription = (
 const getRuntimeImageOptionKey = (item: SystemImageSetting): string =>
   item.id != null
     ? `runtime-image:${item.id}`
-    : `runtime-image:${item.instance_type}:${item.runtime_type ?? "desktop"}:${item.image}`;
+    : `runtime-image:${item.instance_type}:${item.image}`;
 
 const CreateInstancePage: React.FC = () => {
   const { user } = useAuth();
@@ -418,7 +424,7 @@ const CreateInstancePage: React.FC = () => {
   >({});
   const [customEnvRows, setCustomEnvRows] = useState<CustomEnvRow[]>([]);
   const [resourcePresetMode, setResourcePresetMode] = useState<
-    keyof typeof PRESET_CONFIGS | typeof CUSTOM_RESOURCE_PRESET
+    PresetKey | typeof CUSTOM_RESOURCE_PRESET
   >("medium");
 
   const [formData, setFormData] = useState<CreateInstanceRequest>({
@@ -453,7 +459,14 @@ const CreateInstancePage: React.FC = () => {
     runtimeImageOptions.find(
       (item) => getRuntimeImageOptionKey(item) === selectedRuntimeImageKey,
     ) ?? runtimeImageOptions[0] ?? null;
-  const selectedRuntimeType = selectedRuntimeImage?.runtime_type ?? "desktop";
+
+  const isShellRuntime =
+    selectedRuntimeImage?.display_name?.toLowerCase().includes("shell") ??
+    false;
+
+  const activePresetConfigs = isShellRuntime
+    ? SHELL_PRESET_CONFIGS
+    : PRESET_CONFIGS;
 
   const getCreateErrorMessage = (rawError?: string) => {
     if (rawError === "instance name already exists") {
@@ -540,6 +553,19 @@ const CreateInstancePage: React.FC = () => {
     );
   }, [runtimeImageOptions]);
 
+  // Recalculate preset values when switching between Shell/Desktop images
+  useEffect(() => {
+    if (resourcePresetMode !== CUSTOM_RESOURCE_PRESET) {
+      const config = activePresetConfigs[resourcePresetMode as PresetKey] ?? activePresetConfigs.medium;
+      setFormData((current) => ({
+        ...current,
+        cpu_cores: config.cpu_cores,
+        memory_gb: config.memory_gb,
+        disk_gb: config.disk_gb,
+      }));
+    }
+  }, [isShellRuntime]);
+
   useEffect(() => {
     const nextTotalPages = Math.max(
       1,
@@ -597,20 +623,20 @@ const CreateInstancePage: React.FC = () => {
   };
 
   const handlePresetSelect = (
-    preset: keyof typeof PRESET_CONFIGS | typeof CUSTOM_RESOURCE_PRESET,
+    preset: PresetKey | typeof CUSTOM_RESOURCE_PRESET,
   ) => {
     if (preset === CUSTOM_RESOURCE_PRESET) {
       setResourcePresetMode(CUSTOM_RESOURCE_PRESET);
       setFormData((current) => ({
         ...current,
-        cpu_cores: PRESET_CONFIGS.medium.cpu_cores,
-        memory_gb: PRESET_CONFIGS.medium.memory_gb,
-        disk_gb: PRESET_CONFIGS.medium.disk_gb,
+        cpu_cores: activePresetConfigs.medium.cpu_cores,
+        memory_gb: activePresetConfigs.medium.memory_gb,
+        disk_gb: activePresetConfigs.medium.disk_gb,
       }));
       return;
     }
 
-    const config = PRESET_CONFIGS[preset];
+    const config = activePresetConfigs[preset];
     setResourcePresetMode(preset);
     setFormData((current) => ({
       ...current,
@@ -730,7 +756,6 @@ const CreateInstancePage: React.FC = () => {
       setError(null);
       const createPayload: CreateInstanceRequest = {
         ...formData,
-        runtime_type: selectedRuntimeType,
         image_registry: selectedRuntimeImage?.image,
         image_tag: selectedRuntimeImage ? undefined : formData.image_tag,
         environment_overrides: overrides,
@@ -1210,22 +1235,9 @@ const CreateInstancePage: React.FC = () => {
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <h4 className="text-sm font-semibold text-gray-900">
-                                  {item.display_name}
-                                </h4>
-                                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                  (item.runtime_type ?? "desktop") === "shell"
-                                    ? "bg-emerald-50 text-emerald-700"
-                                    : "bg-indigo-50 text-indigo-700"
-                                }`}>
-                                  {t(
-                                    (item.runtime_type ?? "desktop") === "shell"
-                                      ? "instances.runtimeTypeShell"
-                                      : "instances.runtimeTypeDesktop",
-                                  )}
-                                </span>
-                              </div>
+                              <h4 className="text-sm font-semibold text-gray-900">
+                                {item.display_name}
+                              </h4>
                               <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[#b46c50]">
                                 {getInstanceTypeLabel(
                                   t,
@@ -1300,7 +1312,7 @@ const CreateInstancePage: React.FC = () => {
                   </div>
 
                   <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    {Object.entries(PRESET_CONFIGS).map(([key, config]) => {
+                    {Object.entries(activePresetConfigs).map(([key, config]) => {
                       const selected = resourcePresetMode === key;
 
                       return (
@@ -1309,7 +1321,7 @@ const CreateInstancePage: React.FC = () => {
                           type="button"
                           onClick={() =>
                             handlePresetSelect(
-                              key as keyof typeof PRESET_CONFIGS,
+                              key as PresetKey,
                             )
                           }
                           className={`flex h-[188px] flex-col justify-between rounded-[22px] border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-[0_24px_56px_-42px_rgba(72,44,24,0.55)] ${
@@ -1442,10 +1454,10 @@ const CreateInstancePage: React.FC = () => {
                         </div>
                       ) : (
                         <div className="mt-3 text-sm text-gray-600">
-                          {t("instances.mediumDefaultPreset", {
-                            cpu: PRESET_CONFIGS.medium.cpu_cores,
-                            memory: PRESET_CONFIGS.medium.memory_gb,
-                            disk: PRESET_CONFIGS.medium.disk_gb,
+                            {t("instances.mediumDefaultPreset", {
+                              cpu: activePresetConfigs.medium.cpu_cores,
+                              memory: activePresetConfigs.medium.memory_gb,
+                              disk: activePresetConfigs.medium.disk_gb,
                           })}
                         </div>
                       )}
@@ -2051,18 +2063,6 @@ const CreateInstancePage: React.FC = () => {
                               selectedType.name,
                             )
                           : formData.type}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-sm font-medium text-gray-500">
-                        {t("instances.runtimeType")}
-                      </dt>
-                      <dd className="mt-1 text-sm text-gray-900">
-                        {t(
-                          selectedRuntimeType === "shell"
-                            ? "instances.runtimeTypeShell"
-                            : "instances.runtimeTypeDesktop",
-                        )}
                       </dd>
                     </div>
                     <div>

@@ -120,6 +120,22 @@ func (h *SkillHandler) DownloadSkill(c *gin.Context) {
 	c.Data(http.StatusOK, "application/zip", content)
 }
 
+func (h *SkillHandler) AdminDownloadSkill(c *gin.Context) {
+	skillID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "invalid skill ID")
+		return
+	}
+	content, fileName, err := h.service.AdminDownloadSkill(skillID)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/zip")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	c.Data(http.StatusOK, "application/zip", content)
+}
+
 func (h *SkillHandler) DownloadSkillVersionForAgent(c *gin.Context) {
 	content, fileName, err := h.service.DownloadSkillVersionByExternalID(c.Param("skillVersion"))
 	if err != nil {
@@ -231,4 +247,13 @@ func (h *SkillHandler) authorizeOwnedInstance(c *gin.Context) (int, bool) {
 		return 0, false
 	}
 	return instanceID, true
+}
+
+func (h *SkillHandler) ListPublicSkills(c *gin.Context) {
+	items, err := h.service.ListPublicSkills()
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Public skills retrieved successfully", items)
 }

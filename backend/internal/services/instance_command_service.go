@@ -28,6 +28,7 @@ const (
 	InstanceCommandTypeSyncSkillInventory  = "sync_skill_inventory"
 	InstanceCommandTypeRefreshSkillInventory = "refresh_skill_inventory"
 	InstanceCommandTypeCollectSkillPackage = "collect_skill_package"
+	InstanceCommandTypeProcessChannelMessage = "process_channel_message"
 	instanceCommandStatusPending           = "pending"
 	instanceCommandStatusDispatched        = "dispatched"
 	instanceCommandStatusRunning           = "running"
@@ -81,12 +82,15 @@ type InstanceCommandService interface {
 	MarkStarted(session *AgentSession, commandID int, startedAt *time.Time) error
 	MarkFinished(session *AgentSession, commandID int, req AgentCommandFinishRequest) error
 	ListByInstanceID(instanceID int, limit int) ([]InstanceCommandPayload, error)
+	GetCommandResultField(commandID int, field string) (string, error)
+	SetOnCommandFinished(fn func(commandID int, commandType string, result map[string]interface{}))
 }
 
 type instanceCommandService struct {
 	commandRepo      repository.InstanceCommandRepository
 	runtimeRepo      repository.InstanceRuntimeStatusRepository
 	desiredStateRepo repository.InstanceDesiredStateRepository
+	onFinished       func(commandID int, commandType string, result map[string]interface{})
 }
 
 func NewInstanceCommandService(commandRepo repository.InstanceCommandRepository, runtimeRepo repository.InstanceRuntimeStatusRepository, desiredStateRepo repository.InstanceDesiredStateRepository) InstanceCommandService {
@@ -240,7 +244,19 @@ func (s *instanceCommandService) MarkFinished(session *AgentSession, commandID i
 	if strings.TrimSpace(req.ErrorMessage) != "" {
 		command.ErrorMessage = optionalString(strings.TrimSpace(req.ErrorMessage))
 	}
-	return s.commandRepo.Update(command)
+	if err := s.commandRepo.Update(command); err != nil {
+		return err
+	}
+
+	if s.onFinished != nil && req.Status == instanceCommandStatusSucceeded {
+		result := req.Result
+		if result == nil {
+			result = make(map[string]interface{})
+		}
+		s.onFinished(commandID, command.CommandType, result)
+	}
+
+	return nil
 }
 
 func (s *instanceCommandService) ListByInstanceID(instanceID int, limit int) ([]InstanceCommandPayload, error) {
@@ -304,7 +320,8 @@ func isSupportedCommandType(commandType string) bool {
 		InstanceCommandTypeHandleSkillRisk,
 		InstanceCommandTypeSyncSkillInventory,
 		InstanceCommandTypeRefreshSkillInventory,
-		InstanceCommandTypeCollectSkillPackage:
+		InstanceCommandTypeCollectSkillPackage,
+		InstanceCommandTypeProcessChannelMessage:
 		return true
 	default:
 		return false
@@ -353,5 +370,37 @@ func (s *instanceCommandService) applyDesiredStateSideEffects(instanceID int, co
 		runtime.DesiredConfigRevisionID = state.DesiredConfigRevisionID
 		_ = s.runtimeRepo.Update(runtime)
 	}
+
 	return nil
+}
+
+func (s *instanceCommandService) SetOnCommandFinished(fn func(commandID int, commandType string, result map[string]interface{})) {
+	s.onFinished = fn
+}
+
+func (s *instanceCommandService) GetCommandResultField(commandID int, field string) (string, error) {
+	command, err := s.commandRepo.GetByID(commandID)
+	if err != nil || command == nil {
+		return "", err
+	}
+
+	if command.PayloadJSON != nil && strings.TrimSpace(*command.PayloadJSON) != "" {
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(*command.PayloadJSON), &payload); err == nil {
+			if val, ok := payload[field]; ok {
+				return fmt.Sprintf("%v", val), nil
+			}
+		}
+	}
+
+	if command.ResultJSON != nil && strings.TrimSpace(*command.ResultJSON) != "" {
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(*command.ResultJSON), &result); err == nil {
+			if val, ok := result[field]; ok {
+				return fmt.Sprintf("%v", val), nil
+			}
+		}
+	}
+
+	return "", nil
 }

@@ -1,0 +1,214 @@
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import UserLayout from '../../components/UserLayout';
+import { useI18n } from '../../contexts/I18nContext';
+import { agentVariantService } from '../../services/agentVariantService';
+import type { AgentVariantTemplate } from '../../types/agentVariant';
+import {
+  Cpu, HardDrive, MemoryStick, Loader2, AlertCircle, ArrowLeft,
+  Puzzle, Eye, Tag, Clock, Zap
+} from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+const ICON_MAP: Record<string, React.ReactNode> = {
+  bot: <Cpu size={24} />,
+  code: <Cpu size={24} />,
+  terminal: <Cpu size={24} />,
+  'file-text': <Cpu size={24} />,
+  brain: <Cpu size={24} />,
+};
+
+const AgentDetailPage: React.FC = () => {
+  const { t } = useI18n();
+  const { slug } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
+  const [variant, setVariant] = useState<AgentVariantTemplate | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!slug) return;
+    setLoading(true);
+    agentVariantService.getBySlug(slug)
+      .then(setVariant)
+      .catch((err) => setError(err.response?.data?.error || t('marketplace.detail.notFoundMsg')))
+      .finally(() => setLoading(false));
+  }, [slug]);
+
+  if (loading) {
+    return (
+      <UserLayout title={t('marketplace.detail.title')}>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="animate-spin w-6 h-6 text-[#ef4444]" />
+          <span className="ml-3 text-[#5f5957]">{t('marketplace.detail.loading')}</span>
+        </div>
+      </UserLayout>
+    );
+  }
+
+  if (error || !variant) {
+    return (
+      <UserLayout title={t('marketplace.detail.notFound')}>
+        <div className="max-w-lg mx-auto mt-12">
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl flex items-center gap-2">
+            <AlertCircle size={18} />
+            <span>{error || t('marketplace.detail.notFoundMsg')}</span>
+          </div>
+          <button
+            onClick={() => navigate('/marketplace')}
+            className="mt-4 app-button-secondary flex items-center gap-2"
+          >
+            <ArrowLeft size={16} /> {t('marketplace.detail.back')}
+          </button>
+        </div>
+      </UserLayout>
+    );
+  }
+
+  const skillCount = Array.isArray(variant.skill_ids) ? variant.skill_ids.length : 0;
+
+  return (
+    <UserLayout title={variant.name}>
+      <div className="max-w-4xl mx-auto space-y-6">
+        <button
+          onClick={() => navigate('/marketplace')}
+          className="inline-flex items-center gap-2 text-sm text-[#8f8681] hover:text-[#171212] transition-colors"
+        >
+          <ArrowLeft size={16} /> {t('marketplace.detail.back')}
+        </button>
+
+        <div className="app-panel p-6 lg:p-8">
+          <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+            <div className="w-16 h-16 bg-[#fdf9f7] border border-[#eadfd8] rounded-2xl flex items-center justify-center text-[#ef6b4a] shrink-0">
+              {ICON_MAP[variant.icon] || <Cpu size={32} />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h1 className="text-2xl font-bold text-[#171212]">{variant.name}</h1>
+                  <p className="mt-2 text-[#696363] leading-relaxed max-w-2xl">
+                    {variant.description || ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => navigate(`/marketplace/${variant.slug}/quick-create`)}
+                  className="shrink-0 px-6 py-3 rounded-xl bg-[linear-gradient(135deg,#ef6b4a_0%,#dc2626_100%)] text-white font-semibold shadow-[0_18px_32px_-24px_rgba(220,38,38,0.6)] hover:translate-y-[-1px] transition-all flex items-center gap-2"
+                >
+                  <Zap size={18} />
+                  {t('marketplace.detail.deployNow')}
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2 mt-4">
+                <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium bg-[#fff2ea] text-[#ef6b4a]">
+                  <Tag size={12} />
+                  {t(`marketplace.categories.${variant.category}`) || variant.category}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium bg-[#f3f0ed] text-[#5f5957]">
+                  <Cpu size={12} />
+                  {variant.runtime_type}
+                </span>
+                {skillCount > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium bg-[#f3f0ed] text-[#5f5957]">
+                    <Puzzle size={12} />
+                    {t('marketplace.skillCount', { count: skillCount })}
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium bg-[#f3f0ed] text-[#5f5957]">
+                  <Eye size={12} />
+                  v{variant.version}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium bg-[#f3f0ed] text-[#5f5957]">
+                  <Clock size={12} />
+                  {t('marketplace.deploymentCount', { count: variant.usage_count || 0 })}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 app-panel p-6 lg:p-8">
+            <h2 className="text-lg font-semibold text-[#171212] mb-4">{t('marketplace.detail.about')}</h2>
+            {variant.readme_md ? (
+              <div className="prose prose-sm max-w-none text-[#5f5957]">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {variant.readme_md}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <p className="text-[#8f8681] italic">{t('marketplace.detail.noDocs')}</p>
+            )}
+          </div>
+
+          <div className="space-y-6">
+            <div className="app-panel p-5">
+              <h3 className="text-sm font-semibold text-[#171212] mb-3">{t('marketplace.detail.recommendedResources')}</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-[#5f5957]">
+                    <Cpu size={16} className="text-[#ef6b4a]" />
+                    CPU
+                  </div>
+                  <span className="font-semibold text-[#171212]">{variant.recommended_cpu} {t('marketplace.detail.cores')}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-[#5f5957]">
+                    <MemoryStick size={16} className="text-[#ef6b4a]" />
+                    {t('marketplace.detail.memory')}
+                  </div>
+                  <span className="font-semibold text-[#171212]">{variant.recommended_memory} GB</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-[#5f5957]">
+                    <HardDrive size={16} className="text-[#ef6b4a]" />
+                    {t('marketplace.detail.disk')}
+                  </div>
+                  <span className="font-semibold text-[#171212]">{variant.recommended_disk} GB</span>
+                </div>
+              </div>
+            </div>
+
+            {skillCount > 0 && (
+              <div className="app-panel p-5">
+                <h3 className="text-sm font-semibold text-[#171212] mb-3">
+                  {t('marketplace.detail.skillsCount', { count: skillCount })}
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {variant.skill_ids.map((id) => (
+                    <span
+                      key={id}
+                      className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium bg-[#fdf9f7] border border-[#eadfd8] text-[#5f5957]"
+                    >
+                      <Puzzle size={10} />
+                      #{id}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="app-panel p-5">
+              <button
+                onClick={() => navigate(`/marketplace/${variant.slug}/quick-create`)}
+                className="w-full py-2.5 rounded-xl bg-[linear-gradient(135deg,#ef6b4a_0%,#dc2626_100%)] text-white text-sm font-semibold shadow-[0_18px_32px_-24px_rgba(220,38,38,0.6)] hover:translate-y-[-1px] transition-all flex items-center justify-center gap-2"
+              >
+                <Zap size={16} />
+                {t('marketplace.detail.deployNow')}
+              </button>
+              <button
+                onClick={() => navigate(`/marketplace/${variant.slug}/quick-create`)}
+                className="w-full mt-2 py-2.5 rounded-xl border border-[#eadfd8] bg-white text-sm font-semibold text-[#5f5957] hover:bg-[#fff8f5] hover:border-[#ef6b4a] transition-all"
+              >
+                {t('marketplace.detail.customizeDeploy')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </UserLayout>
+  );
+};
+
+export default AgentDetailPage;

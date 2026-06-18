@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"clawreef/internal/models"
 	"clawreef/internal/services"
+	"clawreef/internal/services/k8s"
 	"clawreef/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -23,26 +23,12 @@ import (
 // stream from the exec pipeline rather than a real workspace dump.
 const openclawMinArchiveBytes = 100
 
-const (
-	defaultWorkspaceArchiveMaxMiB = int64(500)
-	workspaceArchiveMaxMiBEnv     = "CLAWMANAGER_WORKSPACE_ARCHIVE_MAX_MIB"
-)
-
-func workspaceArchiveMaxMiB() int64 {
-	value := strings.TrimSpace(os.Getenv(workspaceArchiveMaxMiBEnv))
-	if value == "" {
-		return defaultWorkspaceArchiveMaxMiB
-	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || parsed <= 0 {
-		return defaultWorkspaceArchiveMaxMiB
-	}
-	return parsed
-}
-
-func workspaceArchiveMaxBytes() int64 {
-	return workspaceArchiveMaxMiB() << 20
-}
+// openclawMaxUploadBytes caps the size of an .openclaw import upload.
+// Must align with the edge nginx client_max_body_size so that oversize
+// uploads produce a structured JSON 413 here instead of an opaque HTML
+// 413 from nginx. See ClawManager/deployments/nginx/nginx.conf and
+// deployment/nginx-conf.yaml.
+const openclawMaxUploadBytes = 50 << 20 // 50 MiB
 
 // InstanceHandler handles instance management requests
 type InstanceHandler struct {
@@ -53,14 +39,14 @@ type InstanceHandler struct {
 	instanceConfigRevisionService services.InstanceConfigRevisionService
 	accessService                 *services.InstanceAccessService
 	proxyService                  *services.InstanceProxyService
-	shellService                  *services.InstanceShellService
 	openClawTransferService       services.OpenClawTransferService
 	openClawConfigService         services.OpenClawConfigService
 	skillService                  services.SkillService
+	variantTemplateService        services.AgentVariantTemplateService
 }
 
 // NewInstanceHandler creates a new instance handler
-func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService) *InstanceHandler {
+func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService, variantTemplateService services.AgentVariantTemplateService) *InstanceHandler {
 	accessService := services.NewInstanceAccessService()
 	return &InstanceHandler{
 		instanceService:               instanceService,
@@ -70,10 +56,10 @@ func NewInstanceHandler(instanceService services.InstanceService, instanceAgentS
 		instanceConfigRevisionService: instanceConfigRevisionService,
 		accessService:                 accessService,
 		proxyService:                  services.NewInstanceProxyService(accessService),
-		shellService:                  services.NewInstanceShellService(),
 		openClawTransferService:       services.NewOpenClawTransferService(),
 		openClawConfigService:         openClawConfigService,
 		skillService:                  skillService,
+		variantTemplateService:        variantTemplateService,
 	}
 }
 
@@ -102,8 +88,9 @@ type PublishConfigRevisionRequest struct {
 type CreateInstanceRequest struct {
 	Name                 string                       `json:"name" binding:"required,min=3,max=50"`
 	Description          *string                      `json:"description,omitempty"`
-	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes"`
-	RuntimeType          string                       `json:"runtime_type" binding:"omitempty,oneof=desktop shell"`
+	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes hermes-agent"`
+	VariantID            *int                         `json:"variant_id,omitempty"`
+	VariantVersion       *int                         `json:"-"`
 	CPUCores             float64                      `json:"cpu_cores" binding:"required,min=0.1,max=32"`
 	MemoryGB             int                          `json:"memory_gb" binding:"required,min=1,max=128"`
 	DiskGB               int                          `json:"disk_gb" binding:"required,min=10,max=1000"`
@@ -206,11 +193,67 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		return
 	}
 
+	if req.VariantID != nil && h.variantTemplateService != nil {
+		expansion, err := h.variantTemplateService.ResolveForInstance(*req.VariantID)
+		if err != nil {
+			utils.Error(c, http.StatusBadRequest, "Failed to resolve variant template: "+err.Error())
+			return
+		}
+
+		template, err := h.variantTemplateService.GetByID(*req.VariantID)
+		if err != nil {
+			utils.Error(c, http.StatusBadRequest, "Failed to get variant template: "+err.Error())
+			return
+		}
+
+		req.Type = expansion.RuntimeType
+
+		if req.CPUCores <= 0.5 || req.CPUCores == 1 {
+			req.CPUCores = expansion.RecommendedCPU
+		}
+		if req.MemoryGB <= 1 || req.MemoryGB == 2 {
+			req.MemoryGB = expansion.RecommendedMemory
+		}
+		if req.DiskGB <= 10 || req.DiskGB == 20 {
+			req.DiskGB = expansion.RecommendedDisk
+		}
+
+		if len(expansion.SkillIDs) > 0 {
+			existingIDs := make(map[int]bool)
+			for _, id := range req.SkillIDs {
+				existingIDs[id] = true
+			}
+			for _, id := range expansion.SkillIDs {
+				if !existingIDs[id] {
+					req.SkillIDs = append(req.SkillIDs, id)
+				}
+			}
+		}
+		if expansion.ConfigPlan != nil && req.OpenClawConfigPlan == nil {
+			mode, _ := expansion.ConfigPlan["mode"].(string)
+			req.OpenClawConfigPlan = &services.OpenClawConfigPlan{Mode: mode}
+			if bundleID, ok := expansion.ConfigPlan["bundle_id"].(float64); ok {
+				bid := int(bundleID)
+				req.OpenClawConfigPlan.BundleID = &bid
+			}
+			if resourceIDs, ok := expansion.ConfigPlan["resource_ids"].([]interface{}); ok {
+				for _, rid := range resourceIDs {
+					if ridFloat, ok := rid.(float64); ok {
+						req.OpenClawConfigPlan.ResourceIDs = append(req.OpenClawConfigPlan.ResourceIDs, int(ridFloat))
+					}
+				}
+			}
+		}
+
+		if template != nil {
+			req.VariantVersion = &template.Version
+		}
+	}
+
 	createReq := services.CreateInstanceRequest{
 		Name:                 req.Name,
 		Description:          req.Description,
 		Type:                 req.Type,
-		RuntimeType:          req.RuntimeType,
 		CPUCores:             req.CPUCores,
 		MemoryGB:             req.MemoryGB,
 		DiskGB:               req.DiskGB,
@@ -222,6 +265,8 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		ImageTag:             req.ImageTag,
 		EnvironmentOverrides: req.EnvironmentOverrides,
 		StorageClass:         req.StorageClass,
+		VariantID:            req.VariantID,
+		VariantVersion:       req.VariantVersion,
 		OpenClawConfigPlan:   req.OpenClawConfigPlan,
 	}
 
@@ -231,54 +276,18 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		return
 	}
 
-	skillIDs, err := h.resolveCreateInstanceSkillIDs(userID.(int), req)
-	if err != nil {
-		utils.HandleError(c, err)
-		return
-	}
-
-	for _, skillID := range skillIDs {
+	for _, skillID := range req.SkillIDs {
 		if _, err := h.skillService.AttachSkillToInstance(instance.ID, skillID); err != nil {
 			utils.HandleError(c, err)
 			return
 		}
 	}
 
+	if req.VariantID != nil && h.variantTemplateService != nil {
+		_ = h.variantTemplateService.IncrementUsageCount(*req.VariantID)
+	}
+
 	utils.Success(c, http.StatusCreated, "Instance created successfully", instance)
-}
-
-func (h *InstanceHandler) resolveCreateInstanceSkillIDs(userID int, req CreateInstanceRequest) ([]int, error) {
-	seen := map[int]struct{}{}
-	result := make([]int, 0, len(req.SkillIDs))
-	for _, skillID := range req.SkillIDs {
-		if skillID <= 0 {
-			continue
-		}
-		if _, exists := seen[skillID]; exists {
-			continue
-		}
-		seen[skillID] = struct{}{}
-		result = append(result, skillID)
-	}
-
-	if h.openClawConfigService != nil {
-		bundleSkillIDs, err := h.openClawConfigService.ResolveBundleSkillIDs(userID, req.OpenClawConfigPlan)
-		if err != nil {
-			return nil, err
-		}
-		for _, skillID := range bundleSkillIDs {
-			if skillID <= 0 {
-				continue
-			}
-			if _, exists := seen[skillID]; exists {
-				continue
-			}
-			seen[skillID] = struct{}{}
-			result = append(result, skillID)
-		}
-	}
-
-	return result, nil
 }
 
 // GetInstance gets an instance by ID
@@ -774,11 +783,6 @@ func (h *InstanceHandler) GenerateAccessToken(c *gin.Context) {
 		return
 	}
 
-	if strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
-		utils.Error(c, http.StatusBadRequest, "Desktop access is not available for shell runtime instances")
-		return
-	}
-
 	// Generate proxy entry URL. The actual Service remains internal-only.
 	accessURL := h.proxyService.GetProxyURL(instance.ID, "")
 
@@ -855,31 +859,6 @@ func (h *InstanceHandler) AccessInstance(c *gin.Context) {
 
 	// Redirect to actual access URL
 	c.Redirect(http.StatusTemporaryRedirect, accessToken.AccessURL)
-}
-
-func (h *InstanceHandler) StreamShell(c *gin.Context) {
-	instance, ok := h.requireOwnedInstance(c)
-	if !ok {
-		return
-	}
-
-	if !strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
-		utils.Error(c, http.StatusBadRequest, "Shell access is only available for shell runtime instances")
-		return
-	}
-
-	if instance.Status != "running" {
-		utils.Error(c, http.StatusBadRequest, "Instance is not running")
-		return
-	}
-
-	if err := h.shellService.Stream(c.Request.Context(), instance.UserID, instance.ID, c.Writer, c.Request); err != nil {
-		if !c.Writer.Written() {
-			utils.HandleError(c, err)
-			return
-		}
-		fmt.Printf("Shell stream for instance %d closed with error: %v\n", instance.ID, err)
-	}
 }
 
 // ForceSync manually triggers a status sync
@@ -962,8 +941,15 @@ func (h *InstanceHandler) ProxyInstance(c *gin.Context) {
 		return
 	}
 
+	// Look up the instance's gateway token so the proxy can inject it into the
+	// proxied HTML for the OpenClaw Control UI to authenticate with the gateway WebSocket.
+	var gatewayToken string
+	if instance, lookupErr := h.instanceService.GetByID(id); lookupErr == nil && instance != nil && instance.AccessToken != nil {
+		gatewayToken = *instance.AccessToken
+	}
+
 	// Proxy regular HTTP request
-	err = h.proxyService.ProxyRequest(c.Request.Context(), id, token, c.Writer, c.Request)
+	err = h.proxyService.ProxyRequest(c.Request.Context(), id, token, gatewayToken, c.Writer, c.Request)
 	if err != nil {
 		// Log the error
 		fmt.Printf("Proxy error for instance %d: %v\n", id, err)
@@ -1010,12 +996,6 @@ func (h *InstanceHandler) ExportOpenClaw(c *gin.Context) {
 		utils.Error(c, http.StatusInternalServerError, "export produced an empty archive")
 		return
 	}
-	maxArchiveBytes := workspaceArchiveMaxBytes()
-	if int64(len(archive)) > maxArchiveBytes {
-		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum archive size is %d MiB", maxArchiveBytes>>20))
-		return
-	}
 
 	filename := fmt.Sprintf("%s.openclaw.tar.gz", sanitizeDownloadName(instance.Name))
 	c.Header("Content-Type", "application/gzip")
@@ -1054,12 +1034,6 @@ func (h *InstanceHandler) ExportHermes(c *gin.Context) {
 		utils.Error(c, http.StatusInternalServerError, "export produced an empty archive")
 		return
 	}
-	maxArchiveBytes := workspaceArchiveMaxBytes()
-	if int64(len(archive)) > maxArchiveBytes {
-		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum archive size is %d MiB", maxArchiveBytes>>20))
-		return
-	}
 
 	filename := fmt.Sprintf("%s.hermes.tar.gz", sanitizeDownloadName(instance.Name, "hermes-workspace"))
 	c.Header("Content-Type", "application/gzip")
@@ -1084,27 +1058,27 @@ func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 		return
 	}
 
-	// Cap the request body at the same deployment limit used by nginx. When
-	// the request reaches the backend, MaxBytesReader trips ParseMultipartForm
+	// Cap the request body early so oversize uploads fail with a structured
+	// JSON 413 instead of nginx's opaque HTML 413 or a surprise ENOSPC deep
+	// inside multipart parsing. MaxBytesReader trips ParseMultipartForm
 	// (invoked by c.FormFile) with a typed *http.MaxBytesError.
-	maxArchiveBytes := workspaceArchiveMaxBytes()
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxArchiveBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openclawMaxUploadBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			utils.Error(c, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
+				fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
 			return
 		}
 		utils.Error(c, http.StatusBadRequest, "file is required")
 		return
 	}
 
-	if fileHeader.Size > maxArchiveBytes {
+	if fileHeader.Size > openclawMaxUploadBytes {
 		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
+			fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
 		return
 	}
 
@@ -1115,7 +1089,7 @@ func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if err := h.openClawTransferService.Import(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, maxArchiveBytes)); err != nil {
+	if err := h.openClawTransferService.Import(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, openclawMaxUploadBytes)); err != nil {
 		utils.HandleError(c, err)
 		return
 	}
@@ -1139,24 +1113,23 @@ func (h *InstanceHandler) ImportHermes(c *gin.Context) {
 		return
 	}
 
-	maxArchiveBytes := workspaceArchiveMaxBytes()
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxArchiveBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openclawMaxUploadBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			utils.Error(c, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
+				fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
 			return
 		}
 		utils.Error(c, http.StatusBadRequest, "file is required")
 		return
 	}
 
-	if fileHeader.Size > maxArchiveBytes {
+	if fileHeader.Size > openclawMaxUploadBytes {
 		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
+			fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
 		return
 	}
 
@@ -1167,7 +1140,7 @@ func (h *InstanceHandler) ImportHermes(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if err := h.openClawTransferService.ImportHermes(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, maxArchiveBytes)); err != nil {
+	if err := h.openClawTransferService.ImportHermes(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, openclawMaxUploadBytes)); err != nil {
 		utils.HandleError(c, err)
 		return
 	}
@@ -1202,6 +1175,120 @@ func (h *InstanceHandler) requireOwnedInstance(c *gin.Context) (*models.Instance
 	}
 
 	return instance, true
+}
+
+type UpgradeCheckResponse struct {
+	InstanceID       int    `json:"instance_id"`
+	VariantID        *int   `json:"variant_id"`
+	VariantName      string `json:"variant_name,omitempty"`
+	CurrentVersion   *int   `json:"current_version,omitempty"`
+	LatestVersion    int    `json:"latest_version,omitempty"`
+	UpgradeAvailable bool   `json:"upgrade_available"`
+}
+
+func (h *InstanceHandler) UpgradeCheck(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
+		return
+	}
+
+	instance, err := h.instanceService.GetByID(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	resp := UpgradeCheckResponse{
+		InstanceID: id,
+		VariantID:  instance.VariantID,
+	}
+
+	if instance.VariantID == nil {
+		utils.Success(c, http.StatusOK, "Instance is not linked to a variant template", resp)
+		return
+	}
+
+	template, err := h.variantTemplateService.GetByID(*instance.VariantID)
+	if err != nil {
+		utils.Success(c, http.StatusOK, "Variant template not found", resp)
+		return
+	}
+
+	resp.VariantName = template.Name
+	resp.LatestVersion = template.Version
+	resp.CurrentVersion = instance.VariantVersion
+	resp.UpgradeAvailable = instance.VariantVersion == nil || *instance.VariantVersion < template.Version
+
+	utils.Success(c, http.StatusOK, "Upgrade check completed", resp)
+}
+
+func (h *InstanceHandler) UpgradeInstance(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
+		return
+	}
+
+	instance, err := h.instanceService.GetByID(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	if instance.VariantID == nil {
+		utils.Error(c, http.StatusBadRequest, "Instance is not linked to a variant template")
+		return
+	}
+
+	template, err := h.variantTemplateService.GetByID(*instance.VariantID)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	if instance.VariantVersion != nil && *instance.VariantVersion >= template.Version {
+		utils.Success(c, http.StatusOK, "Instance is already up to date", nil)
+		return
+	}
+
+	if err := h.instanceService.UpdateInstanceResources(id, template.RecommendedCPU, template.RecommendedMemory, template.RecommendedDisk, template.Version); err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Instance upgraded to latest template version", nil)
+}
+
+// ApproveDevicePairing runs `openclaw devices approve --latest` in the instance pod
+// to approve the most recent pending device pairing request.
+func (h *InstanceHandler) ApproveDevicePairing(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	if instance.Type != "openclaw" {
+		utils.Error(c, http.StatusBadRequest, "Device pairing is only available for OpenClaw instances")
+		return
+	}
+
+	if instance.Status != "running" {
+		utils.Error(c, http.StatusBadRequest, "Instance must be running to approve device pairing")
+		return
+	}
+
+	ps := k8s.NewPodService()
+	output, err := ps.ExecInPod(c.Request.Context(), instance.UserID, instance.ID, []string{
+		"sh", "-lc",
+		"openclaw devices approve --latest 2>&1 || echo 'no pending devices found'",
+	})
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Device pairing processed", gin.H{"output": output})
 }
 
 func sanitizeDownloadName(name string, fallback ...string) string {

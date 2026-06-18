@@ -28,30 +28,13 @@ func TestBuildRuntimeConfig_HermesUsesWebtopDefaults(t *testing.T) {
 	if config.Port != 3001 {
 		t.Fatalf("expected Hermes port 3001, got %d", config.Port)
 	}
-	if config.MountPath != "/config" {
-		t.Fatalf("expected Hermes mount path /config, got %q", config.MountPath)
+	if config.MountPath != "/config/.hermes" {
+		t.Fatalf("expected Hermes mount path /config/.hermes, got %q", config.MountPath)
 	}
 	if config.Env["SUBFOLDER"] != "/" {
 		t.Fatalf("expected Hermes default SUBFOLDER /, got %q", config.Env["SUBFOLDER"])
 	}
-	if config.Env["KASM_SVC_SEND_CUT_TEXT"] != kasmClipboardSendDisabled {
-		t.Fatalf("expected Hermes to disable outbound clipboard sync, got %q", config.Env["KASM_SVC_SEND_CUT_TEXT"])
-	}
-	if config.Env["KASM_SVC_ACCEPT_CUT_TEXT"] != kasmClipboardAcceptDisabled {
-		t.Fatalf("expected Hermes to disable inbound clipboard sync, got %q", config.Env["KASM_SVC_ACCEPT_CUT_TEXT"])
-	}
 	if !usesWebtopImage("hermes") {
 		t.Fatalf("expected Hermes to use webtop proxy behavior")
-	}
-}
-
-func TestBuildRuntimeConfig_OpenClawDisablesKasmClipboardSync(t *testing.T) {
-	config := buildRuntimeConfig("openclaw", "openclaw", "latest", nil, nil)
-
-	if config.Env["KASM_SVC_SEND_CUT_TEXT"] != kasmClipboardSendDisabled {
-		t.Fatalf("expected OpenClaw to disable outbound clipboard sync, got %q", config.Env["KASM_SVC_SEND_CUT_TEXT"])
-	}
-	if config.Env["KASM_SVC_ACCEPT_CUT_TEXT"] != kasmClipboardAcceptDisabled {
-		t.Fatalf("expected OpenClaw to disable inbound clipboard sync, got %q", config.Env["KASM_SVC_ACCEPT_CUT_TEXT"])
 	}
 }

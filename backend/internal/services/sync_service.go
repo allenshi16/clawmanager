@@ -99,41 +99,13 @@ func (s *SyncService) syncInstance(ctx context.Context, instance *models.Instanc
 	// Check if pod exists in K8s
 	pod, err := s.podService.GetPod(ctx, instance.UserID, instance.ID)
 	if err != nil {
-		deploymentExists, deploymentErr := s.podService.DeploymentExists(ctx, instance.UserID, instance.ID)
-		if deploymentErr != nil {
-			fmt.Printf("Instance %d: failed to check deployment while pod was missing: %v\n", instance.ID, deploymentErr)
-		}
-		if deploymentExists {
-			if instance.Status != "creating" {
-				fmt.Printf("Instance %d has deployment but no pod yet, updating status to creating\n", instance.ID)
-				instance.Status = "creating"
-				instance.PodName = nil
-				instance.PodNamespace = nil
-				instance.PodIP = nil
-				instance.UpdatedAt = time.Now()
-
-				if err := s.instanceRepo.Update(instance); err != nil {
-					fmt.Printf("Error updating instance %d status: %v\n", instance.ID, err)
-				} else {
-					s.updateInfraStatus(instance.ID, "creating")
-					GetHub().BroadcastInstanceStatus(instance.UserID, instance)
-				}
-			} else {
-				s.updateInfraStatus(instance.ID, "creating")
-			}
+		if instance.Status == "creating" {
+			fmt.Printf("Instance %d: Pod not yet found while instance is creating, keeping status as creating\n", instance.ID)
 			return
 		}
-
-		// Pod doesn't exist in K8s
-		if instance.Status == "running" || instance.Status == "creating" {
-			nextStatus := "stopped"
-			if instance.Status == "creating" {
-				nextStatus = "error"
-			}
-
-			fmt.Printf("Instance %d marked as %s but pod not found in K8s, updating status to %s\n",
-				instance.ID, instance.Status, nextStatus)
-			instance.Status = nextStatus
+		if instance.Status == "running" {
+			fmt.Printf("Instance %d marked as running but pod not found in K8s, updating status to stopped\n", instance.ID)
+			instance.Status = "stopped"
 			instance.PodName = nil
 			instance.PodNamespace = nil
 			instance.PodIP = nil
@@ -142,8 +114,7 @@ func (s *SyncService) syncInstance(ctx context.Context, instance *models.Instanc
 			if err := s.instanceRepo.Update(instance); err != nil {
 				fmt.Printf("Error updating instance %d status: %v\n", instance.ID, err)
 			} else {
-				s.updateInfraStatus(instance.ID, nextStatus)
-				// Broadcast status update
+				s.updateInfraStatus(instance.ID, "stopped")
 				GetHub().BroadcastInstanceStatus(instance.UserID, instance)
 			}
 		}
@@ -231,12 +202,26 @@ func mapPodToInstanceStatus(pod *corev1.Pod) string {
 		if isPodReady(pod) {
 			return "running"
 		}
+		// Check if container is in CrashLoopBackOff with too many restarts
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				if cs.RestartCount > 10 {
+					return "error"
+				}
+			}
+		}
 		return "creating"
 	case corev1.PodPending:
 		return "creating"
 	case corev1.PodSucceeded:
 		return "stopped"
 	case corev1.PodFailed, corev1.PodUnknown:
+		// Only mark as error if the pod is truly dead (not restarting)
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil {
+				return "creating" // Will restart
+			}
+		}
 		return "error"
 	default:
 		return "creating"

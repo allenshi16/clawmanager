@@ -10,7 +10,7 @@ services:
       MYSQL_USER: clawreef
       MYSQL_PASSWORD: clawreef123
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ../internal/db/migrations:/docker-entrypoint-initdb.d
@@ -29,12 +29,11 @@ services:
       SERVER_ADDRESS: ":9001"
       SERVER_MODE: "debug"
       DB_HOST: "mysql"
-      DB_PORT: "3306"
+      DB_PORT: "3307"
       DB_USER: "clawreef"
       DB_PASSWORD: "clawreef123"
       DB_NAME: "clawreef"
       JWT_SECRET: "clawreef-dev-secret-key"
-      CLAWMANAGER_WORKSPACE_ARCHIVE_MAX_MIB: "500"
     ports:
       - "9001:9001"
     depends_on:

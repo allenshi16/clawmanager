@@ -91,7 +91,7 @@ func (s *ServiceService) CreateService(ctx context.Context, config ServiceConfig
 			Labels: map[string]string{
 				"app":           "clawreef",
 				"instance-id":   fmt.Sprintf("%d", config.InstanceID),
-				"instance-name": config.InstanceName,
+				"instance-name": sanitizeK8sName(config.InstanceName),
 				"user-id":       fmt.Sprintf("%d", config.UserID),
 				"managed-by":    "clawreef",
 			},

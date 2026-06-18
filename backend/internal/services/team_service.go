@@ -23,7 +23,7 @@ const (
 	teamConfigMountPath    = teamConfigMountDirPath + "/" + teamConfigFileName
 	teamSharedUID          = 1000
 	teamSharedGID          = 1000
-	teamSharedUmask        = "0002"
+	teamSharedUmask        = 0002
 	teamRedisURLSecretKey  = "CLAWMANAGER_TEAM_REDIS_URL"
 	teamTokenSecretKey     = "CLAWMANAGER_TEAM_TOKEN"
 
@@ -477,10 +477,10 @@ func (s *teamService) teamMemberEnv(team *models.Team, memberKey, role string) m
 		"CLAWMANAGER_TEAM_SHARED_DIR":     team.SharedMountPath,
 		"CLAWMANAGER_TEAM_SHARED_UID":     strconv.Itoa(teamSharedUID),
 		"CLAWMANAGER_TEAM_SHARED_GID":     strconv.Itoa(teamSharedGID),
-		"CLAWMANAGER_TEAM_UMASK":          teamSharedUmask,
+		"CLAWMANAGER_TEAM_UMASK":          fmt.Sprintf("%04o", teamSharedUmask),
 		"PUID":                            strconv.Itoa(teamSharedUID),
 		"PGID":                            strconv.Itoa(teamSharedGID),
-		"UMASK":                           teamSharedUmask,
+		"UMASK":                           fmt.Sprintf("%04o", teamSharedUmask),
 		"CLAWMANAGER_TEAM_CONFIG_PATH":    teamConfigMountPath,
 		"CLAWMANAGER_TEAM_AUTORUN":        "true",
 		"CLAWMANAGER_TEAM_CONSUMER_GROUP": "team-members",

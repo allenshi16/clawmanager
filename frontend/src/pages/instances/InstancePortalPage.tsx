@@ -6,7 +6,6 @@ import React, {
   useState,
 } from "react";
 import { OpenClawDesktopOverlay } from "../../components/OpenClawDesktopOverlay";
-import { InstanceShellTerminal } from "../../components/InstanceShellTerminal";
 import UserLayout from "../../components/UserLayout";
 import { useInstanceDesktopAccess } from "../../hooks/useInstanceDesktopAccess";
 import { instanceService } from "../../services/instanceService";
@@ -31,6 +30,8 @@ const InstancePortalPage: React.FC = () => {
     string | null
   >(null);
   const [runtimeBurstUntil, setRuntimeBurstUntil] = useState<number>(0);
+  const [deviceApproving, setDeviceApproving] = useState(false);
+  const [deviceApproveMsg, setDeviceApproveMsg] = useState<string | null>(null);
   const frameShellRef = useRef<HTMLElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -48,10 +49,6 @@ const InstancePortalPage: React.FC = () => {
       | undefined;
     if (explicitOrigin) {
       return new URL(url, explicitOrigin).toString();
-    }
-
-    if (window.location.port === "9002" && url.startsWith("/api/")) {
-      return `${window.location.protocol}//${window.location.hostname}:9001${url}`;
     }
 
     return url;
@@ -102,8 +99,6 @@ const InstancePortalPage: React.FC = () => {
     () => instances.find((instance) => instance.id === selectedId) ?? null,
     [instances, selectedId],
   );
-  const selectedRuntimeType = selectedInstance?.runtime_type ?? "desktop";
-  const isShellPortal = selectedRuntimeType === "shell";
 
   const {
     embedUrl,
@@ -114,8 +109,7 @@ const InstancePortalPage: React.FC = () => {
     handleFrameError,
   } = useInstanceDesktopAccess({
     instanceId: selectedInstance?.id ?? null,
-    isRunning:
-      selectedInstance?.status === "running" && shouldConnect && !isShellPortal,
+    isRunning: selectedInstance?.status === "running" && shouldConnect,
     retainSessionOnStop: shouldConnect,
     resolveEmbedUrl,
     failedMessage: t("instances.failedToGenerateAccessToken"),
@@ -123,6 +117,7 @@ const InstancePortalPage: React.FC = () => {
 
   useEffect(() => {
     setShouldConnect(false);
+    setDeviceApproveMsg(null);
   }, [selectedId]);
 
   const loadRuntimeDetails = useCallback(async (instanceId: number) => {
@@ -223,6 +218,27 @@ const InstancePortalPage: React.FC = () => {
     requestAccess();
   };
 
+  const handleApproveDevice = async () => {
+    if (!selectedInstance) {
+      return;
+    }
+
+    try {
+      setDeviceApproving(true);
+      setDeviceApproveMsg(null);
+      const result = await instanceService.approveDevicePairing(
+        selectedInstance.id,
+      );
+      setDeviceApproveMsg(result.output || "Device approved successfully");
+    } catch (approveError: any) {
+      setDeviceApproveMsg(
+        approveError.response?.data?.error || "Failed to approve device",
+      );
+    } finally {
+      setDeviceApproving(false);
+    }
+  };
+
   const handleRuntimeCommand = async (
     command:
       | "start"
@@ -258,9 +274,7 @@ const InstancePortalPage: React.FC = () => {
 
   const playerStatusText = !selectedInstance
     ? t("instances.portalSelectInstanceSubtitle")
-    : isShellPortal && selectedInstance.status === "running"
-      ? t("instances.shellReady")
-      : embedUrl
+    : embedUrl
       ? t("instances.readyToAccess")
       : selectedInstance.status === "running"
         ? accessLoading && shouldConnect
@@ -358,8 +372,27 @@ const InstancePortalPage: React.FC = () => {
               <div className="flex items-center gap-2">
                 {selectedInstance &&
                   selectedInstance.status === "running" &&
-                  embedUrl &&
-                  !isShellPortal && (
+                  selectedInstance.type === "openclaw" && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleApproveDevice}
+                        disabled={deviceApproving}
+                        className="rounded-lg bg-[#243041] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#31415a] disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {deviceApproving
+                          ? t("instances.approvingDevice") || "Approving…"
+                          : t("instances.approveDevice") || "Approve Device"}
+                      </button>
+                      {deviceApproveMsg && (
+                        <span className="max-w-[200px] truncate text-[11px] text-[#aab4c4]">
+                          {deviceApproveMsg}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                {selectedInstance &&
+                  selectedInstance.status === "running" &&
+                  embedUrl && (
                     <button
                       onClick={() => refreshAccess({ forceReload: true })}
                       className="rounded-lg bg-[#243041] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#31415a]"
@@ -367,9 +400,7 @@ const InstancePortalPage: React.FC = () => {
                       {t("instances.refreshToken")}
                     </button>
                   )}
-                {(embedUrl ||
-                  (isShellPortal &&
-                    selectedInstance?.status === "running")) && (
+                {embedUrl && (
                   <button
                     type="button"
                     onClick={toggleFullscreen}
@@ -410,17 +441,7 @@ const InstancePortalPage: React.FC = () => {
             </div>
 
             <div className="min-h-0 flex-1">
-              {selectedInstance &&
-              isShellPortal &&
-              selectedInstance.status === "running" ? (
-                <InstanceShellTerminal
-                  instanceId={selectedInstance.id}
-                  instanceName={selectedInstance.name}
-                  isRunning={selectedInstance.status === "running"}
-                  heightClassName="h-full min-h-0 max-h-none"
-                  className="rounded-none border-0 shadow-none"
-                />
-              ) : embedUrl ? (
+              {embedUrl ? (
                 <div className="relative h-full">
                   {selectedInstance?.type === "openclaw" && (
                     <OpenClawDesktopOverlay
@@ -447,9 +468,7 @@ const InstancePortalPage: React.FC = () => {
                     onError={handleFrameError}
                   />
                 </div>
-              ) : selectedInstance &&
-                selectedInstance.status === "running" &&
-                !isShellPortal ? (
+              ) : selectedInstance && selectedInstance.status === "running" ? (
                 <div className="relative flex h-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_26%),linear-gradient(180deg,#111827_0%,#0f172a_100%)] px-8 text-center">
                   {selectedInstance.type === "openclaw" && (
                     <OpenClawDesktopOverlay

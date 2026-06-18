@@ -117,6 +117,28 @@ func (h *LLMModelHandler) DiscoverModels(c *gin.Context) {
 	})
 }
 
+// TestModel performs a live connectivity test against the configured provider endpoint.
+func (h *LLMModelHandler) TestModel(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "Invalid model ID")
+		return
+	}
+
+	result, err := h.service.TestModelConnection(id)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	status := http.StatusOK
+	if !result.Success {
+		status = http.StatusOK // Still 200; the body carries the outcome
+	}
+
+	utils.Success(c, status, "Model connection test completed", result)
+}
+
 // DeleteModel removes a configured model.
 func (h *LLMModelHandler) DeleteModel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))

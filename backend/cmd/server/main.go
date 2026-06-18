@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -49,7 +50,7 @@ func main() {
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(database)
 	quotaRepo := repository.NewQuotaRepository(database)
-	instanceRepo := repository.NewInstanceRepository(database)
+	instanceRepo := repository.NewInstanceRepository(database, cfg.Database)
 	systemImageSettingRepo := repository.NewSystemImageSettingRepository(database)
 	llmModelRepo := repository.NewLLMModelRepository(database)
 	modelInvocationRepo := repository.NewModelInvocationRepository(database)
@@ -65,8 +66,11 @@ func main() {
 	instanceDesiredStateRepo := repository.NewInstanceDesiredStateRepository(database)
 	instanceCommandRepo := repository.NewInstanceCommandRepository(database)
 	instanceConfigRevisionRepo := repository.NewInstanceConfigRevisionRepository(database)
-	teamRepo := repository.NewTeamRepository(database)
 	skillRepo := repository.NewSkillRepository(database)
+	variantTemplateRepo := repository.NewAgentVariantTemplateRepository(database)
+	variantTemplateVersionRepo := repository.NewAgentVariantTemplateVersionRepository(database)
+	channelRepo := repository.NewChannelRepository(database)
+	billingRepo := repository.NewBillingRepository(database)
 	securityScanRepo := repository.NewSecurityScanRepository(database)
 
 	if repaired, repairErr := services.RepairSeededAdminPassword(userRepo); repairErr != nil {
@@ -76,7 +80,7 @@ func main() {
 	}
 
 	// Initialize services
-	authService := services.NewAuthService(userRepo, cfg.JWT)
+	authService := services.NewAuthService(userRepo, quotaRepo, cfg.JWT)
 	quotaService := services.NewQuotaService(quotaRepo)
 	userService := services.NewUserService(userRepo, quotaRepo)
 	systemImageSettingService := services.NewSystemImageSettingService(systemImageSettingRepo)
@@ -89,7 +93,7 @@ func main() {
 	riskDetectionService := services.NewRiskDetectionService(riskRuleRepo)
 	riskHitService := services.NewRiskHitService(riskHitRepo)
 	riskRuleService := services.NewRiskRuleService(riskRuleRepo)
-	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo, skillRepo)
+	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo)
 	objectStorageService, err := services.NewObjectStorageService(cfg.ObjectStorage)
 	if err != nil {
 		log.Fatalf("Failed to initialize object storage: %v", err)
@@ -98,26 +102,22 @@ func main() {
 	aiObservabilityService := services.NewAIObservabilityService(modelInvocationRepo, auditEventRepo, costRecordRepo, riskHitRepo, chatMessageRepo, llmModelRepo, instanceRepo, userRepo)
 	clusterResourceService := services.NewClusterResourceService(instanceRepo)
 	services.SetRuntimeImageSettingsProvider(systemImageSettingService)
-	instanceService := services.NewInstanceService(
-		instanceRepo,
-		quotaRepo,
-		llmModelRepo,
-		openClawConfigService,
-		services.WithPrivilegedInstancePods(cfg.Kubernetes.Runtime.Pod.Privileged),
-	)
+	instanceService := services.NewInstanceService(instanceRepo, quotaRepo, llmModelRepo, openClawConfigService, variantTemplateRepo)
 	instanceAgentService := services.NewInstanceAgentService(instanceRepo, instanceAgentRepo, instanceDesiredStateRepo, instanceRuntimeStatusRepo, instanceCommandRepo)
 	instanceRuntimeStatusService := services.NewInstanceRuntimeStatusService(instanceRuntimeStatusRepo, instanceAgentRepo, instanceDesiredStateRepo)
 	instanceCommandService := services.NewInstanceCommandService(instanceCommandRepo, instanceRuntimeStatusRepo, instanceDesiredStateRepo)
 	instanceConfigRevisionService := services.NewInstanceConfigRevisionService(instanceConfigRevisionRepo)
-	teamService := services.NewTeamService(teamRepo, instanceService)
 	skillService := services.NewSkillService(skillRepo, instanceRepo, instanceCommandService, objectStorageService, skillScannerClient)
 	securityScanService := services.NewSecurityScanService(securityScanRepo, skillRepo, objectStorageService, skillScannerClient)
+	channelService := services.NewChannelService(channelRepo, instanceCommandService)
+	billingService := services.NewBillingService(billingRepo, costRecordRepo)
+	variantTemplateService := services.NewAgentVariantTemplateService(variantTemplateRepo, variantTemplateVersionRepo)
 	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
 	userHandler := handlers.NewUserHandler(userService, quotaService)
-	instanceHandler := handlers.NewInstanceHandler(instanceService, instanceAgentService, instanceRuntimeStatusService, instanceCommandService, instanceConfigRevisionService, openClawConfigService, skillService)
+	instanceHandler := handlers.NewInstanceHandler(instanceService, instanceAgentService, instanceRuntimeStatusService, instanceCommandService, instanceConfigRevisionService, openClawConfigService, skillService, variantTemplateService)
 	systemSettingsHandler := handlers.NewSystemSettingsHandler(systemImageSettingService)
 	llmModelHandler := handlers.NewLLMModelHandler(llmModelService)
 	aiGatewayHandler := handlers.NewAIGatewayHandler(aiGatewayService)
@@ -128,8 +128,18 @@ func main() {
 	openClawConfigHandler := handlers.NewOpenClawConfigHandler(openClawConfigService)
 	skillHandler := handlers.NewSkillHandler(skillService, instanceService)
 	securityHandler := handlers.NewSecurityHandler(securityScanService)
-	agentHandler := handlers.NewAgentHandler(instanceAgentService, instanceCommandService, instanceRuntimeStatusService, instanceConfigRevisionService, skillService)
-	teamHandler := handlers.NewTeamHandler(teamService)
+	channelHandler := handlers.NewChannelHandler(channelService)
+	billingHandler := handlers.NewBillingHandler(billingService)
+	agentHandler := handlers.NewAgentHandler(instanceAgentService, instanceCommandService, instanceRuntimeStatusService, instanceConfigRevisionService, skillService, systemImageSettingService)
+	variantTemplateHandler := handlers.NewVariantTemplateHandler(variantTemplateService)
+
+	instanceCommandService.SetOnCommandFinished(func(commandID int, commandType string, result map[string]interface{}) {
+		if commandType == services.InstanceCommandTypeProcessChannelMessage {
+			if err := channelService.HandleCommandFinished(commandID); err != nil {
+				fmt.Printf("Error handling channel command finish: %v\n", err)
+			}
+		}
+	})
 
 	// Initialize WebSocket hub and handler
 	wsHub := services.GetHub()
@@ -138,7 +148,6 @@ func main() {
 	// Start sync service to keep instance status in sync with K8s
 	syncService := services.NewSyncService(instanceRepo, instanceRuntimeStatusService)
 	syncService.Start()
-	teamService.Start()
 
 	// Setup router
 	r := gin.Default()
@@ -206,7 +215,6 @@ func main() {
 			instances.POST("/:id/config/revisions/publish", instanceHandler.PublishConfigRevision)
 			instances.POST("/:id/access", instanceHandler.GenerateAccessToken)
 			instances.GET("/:id/access", instanceHandler.AccessInstance)
-			instances.GET("/:id/shell", instanceHandler.StreamShell)
 			instances.POST("/:id/sync", instanceHandler.ForceSync)
 			instances.GET("/:id/openclaw/export", instanceHandler.ExportOpenClaw)
 			instances.POST("/:id/openclaw/import", instanceHandler.ImportOpenClaw)
@@ -215,6 +223,9 @@ func main() {
 			instances.GET("/:id/skills", skillHandler.ListInstanceSkills)
 			instances.POST("/:id/skills", skillHandler.AttachSkillToInstance)
 			instances.DELETE("/:id/skills/:skillId", skillHandler.RemoveSkillFromInstance)
+			instances.GET("/:id/upgrade-check", instanceHandler.UpgradeCheck)
+			instances.POST("/:id/upgrade", instanceHandler.UpgradeInstance)
+			instances.POST("/:id/devices/approve", instanceHandler.ApproveDevicePairing)
 		}
 
 		// Admin console: cross-user instance listing. Gated by admin
@@ -227,20 +238,6 @@ func main() {
 		adminInstances.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminInstances.GET("", instanceHandler.ListAllInstances)
-		}
-
-		teams := api.Group("/teams")
-		teams.Use(middleware.Auth())
-		teams.Use(middleware.SetUserInfo(userRepo))
-		{
-			teams.GET("", teamHandler.ListTeams)
-			teams.POST("", teamHandler.CreateTeam)
-			teams.GET("/:id", teamHandler.GetTeam)
-			teams.DELETE("/:id", teamHandler.DeleteTeam)
-			teams.GET("/:id/tasks", teamHandler.ListTasks)
-			teams.POST("/:id/tasks", teamHandler.DispatchTask)
-			teams.GET("/:id/events", teamHandler.ListEvents)
-			teams.DELETE("/:id/members/:memberID", teamHandler.DeleteMember)
 		}
 
 		openClawConfigs := api.Group("/openclaw-configs")
@@ -298,6 +295,33 @@ func main() {
 			adminSystemSettings.GET("/cluster-resources", clusterResourceHandler.GetOverview)
 		}
 
+		billing := api.Group("/billing")
+		billing.Use(middleware.Auth())
+		{
+			billing.GET("/plans", billingHandler.ListPlans)
+			billing.GET("/plans/:id", billingHandler.GetPlan)
+			billing.GET("/subscription", billingHandler.GetSubscription)
+			billing.POST("/subscribe", billingHandler.CreateSubscription)
+			billing.DELETE("/subscribe", billingHandler.CancelSubscription)
+			billing.GET("/invoices", billingHandler.ListInvoices)
+			billing.GET("/usage", billingHandler.GetUsageSummary)
+		}
+
+		// Channel routes (authenticated)
+		channels := api.Group("/channels")
+		channels.Use(middleware.Auth())
+		channels.Use(middleware.SetUserInfo(userRepo))
+		{
+			channels.POST("", channelHandler.CreateChannel)
+			channels.GET("", channelHandler.ListChannels)
+			channels.GET("/:id", channelHandler.GetChannel)
+			channels.PUT("/:id", channelHandler.UpdateChannel)
+			channels.DELETE("/:id", channelHandler.DeleteChannel)
+		}
+
+		// Webhook routes (public, no auth)
+		api.POST("/webhooks/:type/:id", channelHandler.WebhookHandler)
+
 		adminModels := api.Group("/admin/models")
 		adminModels.Use(middleware.Auth())
 		adminModels.Use(middleware.SetUserInfo(userRepo))
@@ -305,6 +329,7 @@ func main() {
 		{
 			adminModels.GET("", llmModelHandler.ListModels)
 			adminModels.POST("/discover", llmModelHandler.DiscoverModels)
+			adminModels.POST("/:id/test", llmModelHandler.TestModel)
 			adminModels.PUT("", llmModelHandler.UpsertModel)
 			adminModels.DELETE("/:id", llmModelHandler.DeleteModel)
 		}
@@ -324,9 +349,17 @@ func main() {
 		adminCosts.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminCosts.GET("", aiObservabilityHandler.GetCostOverview)
+
+
 		}
 
 		adminRiskRules := api.Group("/admin/risk-rules")
+	// Agent templates for marketplace (public)
+	api.GET("/agents", agentHandler.ListAgentTemplates)
+	api.GET("/agent-variants", variantTemplateHandler.ListPublic)
+	api.GET("/agent-variants/:slug", variantTemplateHandler.GetBySlug)
+	api.GET("/skills/public", skillHandler.ListPublicSkills)
+
 		adminRiskRules.Use(middleware.Auth())
 		adminRiskRules.Use(middleware.SetUserInfo(userRepo))
 		adminRiskRules.Use(middleware.NewAdminAuth(userRepo))
@@ -344,6 +377,35 @@ func main() {
 		adminSkills.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminSkills.GET("", skillHandler.ListAllSkills)
+			adminSkills.GET("/:id/download", skillHandler.AdminDownloadSkill)
+		}
+
+		adminVariants := api.Group("/admin/agent-variants")
+		adminVariants.Use(middleware.Auth())
+		adminVariants.Use(middleware.SetUserInfo(userRepo))
+		adminVariants.Use(middleware.NewAdminAuth(userRepo))
+		{
+			adminVariants.GET("", variantTemplateHandler.ListAll)
+			adminVariants.GET("/stats", variantTemplateHandler.GetStats)
+			adminVariants.GET("/:id", variantTemplateHandler.GetByID)
+			adminVariants.POST("", variantTemplateHandler.Create)
+			adminVariants.PUT("/:id", variantTemplateHandler.Update)
+			adminVariants.DELETE("/:id", variantTemplateHandler.Delete)
+			adminVariants.PUT("/:id/publish", variantTemplateHandler.Publish)
+			adminVariants.PUT("/:id/deprecate", variantTemplateHandler.Deprecate)
+			adminVariants.PUT("/:id/archive", variantTemplateHandler.Archive)
+			adminVariants.GET("/:id/versions", variantTemplateHandler.ListVersions)
+			adminVariants.GET("/:id/versions/:version", variantTemplateHandler.GetVersion)
+			adminVariants.POST("/:id/fork", variantTemplateHandler.Fork)
+			adminVariants.GET("/review", variantTemplateHandler.ListByReviewStatus)
+			adminVariants.PUT("/:id/submit-review", variantTemplateHandler.SubmitForReview)
+			adminVariants.PUT("/:id/approve", variantTemplateHandler.Approve)
+			adminVariants.PUT("/:id/reject", variantTemplateHandler.Reject)
+			adminVariants.GET("/:id/diff", variantTemplateHandler.DiffVersions)
+			adminVariants.POST("/:id/rollback", variantTemplateHandler.RestoreVersion)
+			adminVariants.POST("/batch/publish", variantTemplateHandler.BulkPublish)
+			adminVariants.POST("/batch/deprecate", variantTemplateHandler.BulkDeprecate)
+			adminVariants.POST("/batch/archive", variantTemplateHandler.BulkArchive)
 		}
 
 		adminSecurity := api.Group("/admin/security")
@@ -424,7 +486,6 @@ func main() {
 
 	// Stop background services
 	syncService.Stop()
-	teamService.Stop()
 	wsHub.Stop()
 	instanceHandler.Shutdown()
 

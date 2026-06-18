@@ -32,6 +32,11 @@ export const skillService = {
     return response.data;
   },
 
+  adminDownloadSkill: async (id: number): Promise<Blob> => {
+    const response = await api.get(`/admin/skills/${id}/download`, { responseType: 'blob' });
+    return response.data;
+  },
+
   listVersions: async (id: number): Promise<SkillVersion[]> => {
     const response = await api.get(`/skills/${id}/versions`);
     return response.data.data;

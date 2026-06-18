@@ -160,6 +160,7 @@ type SkillService interface {
 	UpdateSkill(userID, skillID int, req UpdateSkillRequest) (*SkillPayload, error)
 	DeleteSkill(userID, skillID int) error
 	DownloadSkill(userID, skillID int) ([]byte, string, error)
+	AdminDownloadSkill(skillID int) ([]byte, string, error)
 	DownloadSkillVersionByExternalID(externalVersionID string) ([]byte, string, error)
 	ListVersions(userID, skillID int) ([]SkillVersionPayload, error)
 	ListInstanceSkills(instanceID int) ([]InstanceSkillPayload, error)
@@ -168,6 +169,7 @@ type SkillService interface {
 	SyncAgentSkills(instanceID int, req AgentSkillInventoryReportRequest) error
 	UploadAgentSkillPackage(ctx context.Context, instanceID int, req AgentSkillPackageUploadRequest, fileHeader *multipart.FileHeader) (*SkillPayload, error)
 	ListScanResults(userID, skillID int) ([]SkillScanResultPayload, error)
+	ListPublicSkills() ([]SkillPayload, error)
 }
 
 type skillService struct {
@@ -227,6 +229,15 @@ func (s *skillService) ListSkills(userID int) ([]SkillPayload, error) {
 		}
 	}
 	return s.toSkillPayloads(filtered)
+}
+
+// ListPublicSkills returns all active skills for public API access
+func (s *skillService) ListPublicSkills() ([]SkillPayload, error) {
+	items, err := s.repo.ListPublicSkills()
+	if err != nil {
+		return nil, err
+	}
+	return s.toSkillPayloads(items)
 }
 
 func (s *skillService) ListAllSkills() ([]SkillPayload, error) {
@@ -294,6 +305,35 @@ func (s *skillService) DownloadSkill(userID, skillID int) ([]byte, string, error
 		return nil, "", err
 	}
 	if item == nil || item.UserID != userID {
+		return nil, "", fmt.Errorf("skill not found")
+	}
+	if !isUserManagedSkill(*item) {
+		return nil, "", fmt.Errorf("skill not found")
+	}
+	if item.CurrentVersionID == nil {
+		return nil, "", fmt.Errorf("skill has no version")
+	}
+	version, err := s.repo.GetVersionByID(*item.CurrentVersionID)
+	if err != nil {
+		return nil, "", err
+	}
+	blob, err := s.repo.GetBlobByID(version.BlobID)
+	if err != nil {
+		return nil, "", err
+	}
+	content, err := s.storage.GetObject(context.Background(), blob.ObjectKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return content, blob.FileName, nil
+}
+
+func (s *skillService) AdminDownloadSkill(skillID int) ([]byte, string, error) {
+	item, err := s.repo.GetSkillByID(skillID)
+	if err != nil {
+		return nil, "", err
+	}
+	if item == nil {
 		return nil, "", fmt.Errorf("skill not found")
 	}
 	if !isUserManagedSkill(*item) {
@@ -852,30 +892,15 @@ func extractSkillDirectories(filename string, raw []byte) ([]extractedSkillDirec
 		return nil, err
 	}
 
-	normalized := map[string][]byte{}
+	grouped := map[string]map[string][]byte{}
 	for name, content := range fileMap {
-		clean := normalizeArchiveEntryPath(name)
-		if clean == "" || isArchiveMetadataEntry(clean) {
+		clean := path.Clean(strings.TrimPrefix(name, "./"))
+		if clean == "." || strings.HasPrefix(clean, "..") {
 			continue
 		}
-		normalized[clean] = content
-	}
-	if len(normalized) == 0 {
-		return nil, nil
-	}
-
-	if hasSkillManifest(normalized) {
-		return []extractedSkillDirectory{{
-			Name:  archiveSkillName(filename),
-			Files: normalized,
-		}}, nil
-	}
-
-	grouped := map[string]map[string][]byte{}
-	for clean, content := range normalized {
 		parts := strings.Split(clean, "/")
 		if len(parts) < 2 {
-			return nil, fmt.Errorf("archive must contain SKILL.md at the root or top-level skill directories; found loose file %s", clean)
+			return nil, fmt.Errorf("archive must contain one or more top-level directories; found loose file %s", clean)
 		}
 		root := parts[0]
 		if _, ok := grouped[root]; !ok {
@@ -883,12 +908,8 @@ func extractSkillDirectories(filename string, raw []byte) ([]extractedSkillDirec
 		}
 		grouped[root][strings.Join(parts[1:], "/")] = content
 	}
-
 	keys := make([]string, 0, len(grouped))
-	for key, files := range grouped {
-		if !hasSkillManifest(files) {
-			return nil, fmt.Errorf("skill directory %s must contain SKILL.md", key)
-		}
+	for key := range grouped {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -897,48 +918,6 @@ func extractSkillDirectories(filename string, raw []byte) ([]extractedSkillDirec
 		result = append(result, extractedSkillDirectory{Name: key, Files: grouped[key]})
 	}
 	return result, nil
-}
-
-func normalizeArchiveEntryPath(value string) string {
-	value = strings.ReplaceAll(value, "\\", "/")
-	value = path.Clean(strings.TrimPrefix(strings.TrimSpace(value), "./"))
-	if value == "." || value == "" || strings.HasPrefix(value, "..") {
-		return ""
-	}
-	return value
-}
-
-func hasSkillManifest(files map[string][]byte) bool {
-	for key := range files {
-		if strings.EqualFold(normalizeArchiveEntryPath(key), "SKILL.md") {
-			return true
-		}
-	}
-	return false
-}
-
-func isArchiveMetadataEntry(value string) bool {
-	clean := normalizeArchiveEntryPath(value)
-	if clean == "" {
-		return true
-	}
-	parts := strings.Split(clean, "/")
-	if parts[0] == "__MACOSX" {
-		return true
-	}
-	base := parts[len(parts)-1]
-	return base == ".DS_Store" || base == "Thumbs.db" || strings.HasPrefix(base, "._")
-}
-
-func archiveSkillName(filename string) string {
-	name := path.Base(strings.ReplaceAll(strings.TrimSpace(filename), "\\", "/"))
-	if ext := path.Ext(name); ext != "" {
-		name = strings.TrimSuffix(name, ext)
-	}
-	if sanitizeSkillKey(name) == "" {
-		return "skill"
-	}
-	return name
 }
 
 func extractArchiveFileMap(filename string, raw []byte) (map[string][]byte, error) {

@@ -13,6 +13,7 @@ import (
 type SkillRepository interface {
 	ListSkillsByUser(userID int) ([]models.Skill, error)
 	ListAllSkills() ([]models.Skill, error)
+	ListPublicSkills() ([]models.Skill, error)
 	GetSkillByID(id int) (*models.Skill, error)
 	GetSkillByUserKey(userID int, skillKey string) (*models.Skill, error)
 	CreateSkill(skill *models.Skill) error
@@ -54,6 +55,14 @@ func (r *skillRepository) ListAllSkills() ([]models.Skill, error) {
 	var items []models.Skill
 	if err := r.sess.Collection("skills").Find().OrderBy("-updated_at", "-id").All(&items); err != nil {
 		return nil, fmt.Errorf("failed to list all skills: %w", err)
+	}
+	return items, nil
+}
+
+func (r *skillRepository) ListPublicSkills() ([]models.Skill, error) {
+	var items []models.Skill
+	if err := r.sess.Collection("skills").Find(db.Cond{"status": "active"}).OrderBy("-updated_at", "-id").All(&items); err != nil {
+		return nil, fmt.Errorf("failed to list public skills: %w", err)
 	}
 	return items, nil
 }

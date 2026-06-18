@@ -13,8 +13,8 @@ export interface Instance {
     | "centos"
     | "custom"
     | "webtop"
-    | "hermes";
-  runtime_type: "desktop" | "shell";
+    | "hermes"
+    | "hermes-agent";
   status: "creating" | "running" | "stopped" | "error" | "deleting";
   cpu_cores: number;
   memory_gb: number;
@@ -32,6 +32,8 @@ export interface Instance {
   pod_ip?: string;
   access_url?: string;
   openclaw_config_snapshot_id?: number;
+  variant_id?: number;
+  variant_version?: number;
   created_at: string;
   updated_at: string;
   started_at?: string;
@@ -124,8 +126,9 @@ export interface CreateInstanceRequest {
     | "centos"
     | "custom"
     | "webtop"
-    | "hermes";
-  runtime_type?: "desktop" | "shell";
+    | "hermes"
+    | "hermes-agent";
+  variant_id?: number;
   cpu_cores: number;
   memory_gb: number;
   disk_gb: number;
@@ -212,6 +215,14 @@ export const INSTANCE_TYPES: InstanceType[] = [
     defaultVersion: "latest",
   },
   {
+    id: "hermes-agent",
+    name: "Hermes Agent (Nous Research)",
+    description: "Nous Research Hermes agent runtime with reasoning and self-improvement capabilities",
+    icon: "hermes-agent",
+    defaultOs: "ubuntu",
+    defaultVersion: "22.04",
+  },
+  {
     id: "custom",
     name: "Custom Image",
     description: "Use your own custom image",
@@ -221,7 +232,17 @@ export const INSTANCE_TYPES: InstanceType[] = [
   },
 ];
 
-export const PRESET_CONFIGS = {
+export type PresetKey = "small" | "medium" | "large";
+
+export interface PresetConfig {
+  name: string;
+  cpu_cores: number;
+  memory_gb: number;
+  disk_gb: number;
+  description: string;
+}
+
+export const PRESET_CONFIGS: Record<string, PresetConfig> = {
   small: {
     name: "Small",
     cpu_cores: 2,
@@ -241,6 +262,31 @@ export const PRESET_CONFIGS = {
     cpu_cores: 8,
     memory_gb: 16,
     disk_gb: 100,
+    description: "For heavy workloads",
+  },
+};
+
+/** Lightweight presets for CLI-only / Shell-based runtimes (no desktop). */
+export const SHELL_PRESET_CONFIGS: Record<string, PresetConfig> = {
+  small: {
+    name: "Small",
+    cpu_cores: 0.5,
+    memory_gb: 1,
+    disk_gb: 5,
+    description: "Suitable for light tasks",
+  },
+  medium: {
+    name: "Medium",
+    cpu_cores: 1,
+    memory_gb: 2,
+    disk_gb: 10,
+    description: "Good for development",
+  },
+  large: {
+    name: "Large",
+    cpu_cores: 2,
+    memory_gb: 4,
+    disk_gb: 20,
     description: "For heavy workloads",
   },
 };

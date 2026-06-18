@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +81,9 @@ func NewInstanceProxyService(accessService *InstanceAccessService) *InstanceProx
 }
 
 // ProxyRequest proxies a request to an instance
-func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int, token string, w http.ResponseWriter, r *http.Request) error {
+// gatewayToken is the instance's gateway token (igt_...) injected into the proxied
+// HTML so the OpenClaw Control UI can authenticate with the gateway WebSocket.
+func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int, token string, gatewayToken string, w http.ResponseWriter, r *http.Request) error {
 	// Handle CORS preflight request
 	if r.Method == "OPTIONS" {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -152,6 +155,8 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 		proxyReq.Header.Del("Accept-Encoding")
 	}
 
+	proxyReq.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", targetPort))
+
 	// Remove hop-by-hop headers
 	s.removeHopByHopHeaders(proxyReq.Header)
 
@@ -179,7 +184,11 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 			return fmt.Errorf("failed to close upstream html body: %w", closeErr)
 		}
 
-		modifiedBody := injectProxyBase(string(body), fmt.Sprintf("/api/v1/instances/%d/proxy/", instanceID))
+		proxyBase := fmt.Sprintf("/api/v1/instances/%d/proxy/", instanceID)
+		modifiedBody := injectProxyBase(string(body), proxyBase)
+		if gatewayToken != "" {
+			modifiedBody = injectGatewayConfig(modifiedBody, proxyBase, gatewayToken)
+		}
 		resp.Body = io.NopCloser(bytes.NewReader([]byte(modifiedBody)))
 		resp.ContentLength = int64(len(modifiedBody))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(modifiedBody)))
@@ -270,6 +279,7 @@ func (s *InstanceProxyService) ProxyWebSocket(ctx context.Context, instanceID in
 	upstreamHeader.Del("Sec-Websocket-Key")
 	upstreamHeader.Del("Sec-Websocket-Version")
 	upstreamHeader.Del("Sec-Websocket-Extensions")
+	upstreamHeader.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", accessToken.TargetPort))
 	upstreamHeader.Set("X-Forwarded-Proto", requestScheme(r))
 	upstreamHeader.Set("X-Forwarded-Prefix", fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID))
 
@@ -445,13 +455,12 @@ func (s *InstanceProxyService) extractTargetPath(requestPath string, instanceID 
 	return requestPath
 }
 
-// GetProxyURL generates a proxy URL for frontend
-func (s *InstanceProxyService) GetProxyURL(instanceID int, token string) string {
-	if token == "" {
-		return fmt.Sprintf("/api/v1/instances/%d/proxy/", instanceID)
-	}
-
-	return fmt.Sprintf("/api/v1/instances/%d/proxy/?token=%s", instanceID, token)
+// GetProxyURL generates a proxy URL for frontend.
+// Token is delivered via HttpOnly cookie, NOT ?token= query param.
+// Appending ?token= causes the OpenClaw Control UI to read it from
+// window.location.search and auto-fill it as the gateway token (wrong).
+func (s *InstanceProxyService) GetProxyURL(instanceID int, _ string) string {
+	return fmt.Sprintf("/api/v1/instances/%d/proxy/", instanceID)
 }
 
 // GetTargetPortForInstance returns the service target port used by the instance type.
@@ -511,14 +520,22 @@ func (s *InstanceProxyService) resolveTargetScheme(instanceType string, websocke
 
 func usesHTTPSUpstream(instanceType string) bool {
 	switch instanceType {
-	case "ubuntu", "webtop", "hermes", "openclaw":
+	case "ubuntu", "webtop", "hermes":
 		return true
+	case "openclaw":
+		// OpenClaw gateway (openclaw.mjs) serves HTTP, not HTTPS.
+		return false
 	default:
 		return false
 	}
 }
 
 func (s *InstanceProxyService) resolveProxyHost(ctx context.Context, userID, instanceID int, serviceInfo *k8s.ServiceInfo) string {
+	// In dev mode, use PROXY_DEV_HOST (e.g., 127.0.0.1) when running outside the K8s cluster
+	// Requires: kubectl port-forward svc/<service-name> <targetPort>:<targetPort> -n <namespace>
+	if devHost := os.Getenv("PROXY_DEV_HOST"); devHost != "" {
+		return fmt.Sprintf("%s:%d", devHost, serviceInfo.TargetPort)
+	}
 	return fmt.Sprintf("%s:%d", serviceInfo.ClusterIP, serviceInfo.TargetPort)
 }
 
@@ -591,6 +608,86 @@ func injectProxyBase(html, proxyBase string) string {
 	}
 
 	return baseTag + html
+}
+
+// injectGatewayConfig injects a <script> into the proxied OpenClaw Control UI HTML
+// that sets the gateway token in sessionStorage (where the OpenClaw JS expects it)
+// and sets window.__OPENCLAW_CONTROL_UI_BASE_PATH__ for correct WebSocket URL derivation.
+// The key must match what FC()/NC() generate in the OpenClaw JS:
+//   "openclaw.control.token.v1:" + effectiveUrl
+// where effectiveUrl = MC(url) and MC() normalizes by removing trailing slashes:
+//   r = pathname.replace(/\/+$/, "")
+// The sessionStorage key is: "openclaw.control.token.v1:" + normalizedUrl
+//
+// Effective URL derivation in the OpenClaw JS (MC function):
+//   n = new URL(url, pageUrl)
+//   path = n.pathname === "/" ? "" : n.pathname.replace(/\/+$/, "")
+//   result = n.protocol + "//" + n.host + path
+// So we normalize our injected keys the same way.
+func injectGatewayConfig(html, proxyBase, gatewayToken string) string {
+	script := fmt.Sprintf(`<script>
+(function(){
+    // The OpenClaw Control JS reads the gateway token from sessionStorage with key:
+    //   "openclaw.control.token.v1:" + MC(effectiveUrl)
+    // Where MC() normalizes URLs by stripping trailing slashes from the pathname.
+    // We must set tokens in sessionStorage with matching normalized keys.
+
+    var proto = window.location.protocol.replace(/:$/, '');
+    var wsProto = proto.replace('http', 'ws');
+    var host = window.location.host;
+    var hostname = window.location.hostname;
+
+    window.__OPENCLAW_CONTROL_UI_BASE_PATH__ = '%s';
+
+    // Normalize a URL path to match MC() behavior:
+    //   If path === "/", use ""; otherwise strip trailing slashes.
+    function normPath(p) {
+        if (p === '/') return '';
+        return p.replace(/\/+$/, '') || p;
+    }
+
+    var normBase = normPath('%s');
+    var token = '%s';
+
+    // Key 1: Proxy URL with http:// — use normalized path (no trailing slash)
+    try { sessionStorage.setItem('openclaw.control.token.v1:' + proto + '://' + host + normBase, token); } catch(e) {}
+    // Key 2: Proxy URL with ws://
+    try { sessionStorage.setItem('openclaw.control.token.v1:' + wsProto + '://' + host + normBase, token); } catch(e) {}
+    // Key 3: Direct connection URL with http:// (port 18789) — no path, always matches
+    try { sessionStorage.setItem('openclaw.control.token.v1:' + proto + '://' + hostname + ':18789', token); } catch(e) {}
+    // Key 4: Direct connection URL with ws:// (port 18789)
+    try { sessionStorage.setItem('openclaw.control.token.v1:' + wsProto + '://' + hostname + ':18789', token); } catch(e) {}
+    // Key 5: Also try location.href normalized (page URL the JS may compute as base)
+    try { var pageUrl = window.location.href; var u = new URL(pageUrl); var pp = normPath(u.pathname); sessionStorage.setItem('openclaw.control.token.v1:' + u.protocol.replace(/:$/, '') + '://' + u.host + pp, token); } catch(e) {}
+
+    // The OpenClaw JS reads ?token= from the URL as the gateway token for HTTP API
+    // calls (control-ui-config.json). Rewrite the URL so it finds the right token
+    // instead of the JWT access token the Go proxy used.
+    if (window.history && window.history.replaceState) {
+        try {
+            var url = new URL(window.location.href);
+            if (url.searchParams.has('token')) {
+                url.searchParams.set('token', token);
+                window.history.replaceState({}, '', url.toString());
+            }
+        } catch(e) {}
+    }
+})();
+</script>`, proxyBase, proxyBase, gatewayToken)
+
+	// Insert before the first <script> or at the end of <head>
+	for _, tag := range []string{"</head>", "</head>", "</HEAD>", "</head>"} {
+		if idx := strings.Index(html, tag); idx != -1 {
+			return html[:idx] + script + html[idx:]
+		}
+	}
+	// Fallback: append before </html>
+	for _, tag := range []string{"</html>", "</Html>", "</HTML>"} {
+		if idx := strings.Index(html, tag); idx != -1 {
+			return html[:idx] + script + html[idx:]
+		}
+	}
+	return html + script
 }
 
 func (s *InstanceProxyService) rewriteRedirectLocation(instanceID int, location string) string {

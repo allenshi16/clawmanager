@@ -65,3 +65,31 @@ AGENTS.md
 TASK_BREAKDOWN.md
 dev_progress.md
 CLAUDE.md
+
+# Windows Zone.Identifier metadata
+*:Zone.Identifier
+
+# Tool data directories
+.data/
+.omo/
+.sisyphus/
+tmp/
+
+# Local config overrides
+backend/config.yaml
+
+# Build artifacts
+backend/clawmanager
+backend/server
+
+# Temporary SQL files
+fix_quotas.sql
+
+# Backup files
+*.bak
+
+# Duplicate deployment directory
+deployments/deployments/
+
+# Dev docs
+INTEGRATION_PLAN.md

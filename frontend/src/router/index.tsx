@@ -3,6 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { useI18n } from '../contexts/I18nContext';
 
+// Public Pages
+import LandingPage from '../pages/landing/LandingPage';
+
 // Auth Pages
 import LoginPage from '../pages/auth/LoginPage';
 import RegisterPage from '../pages/auth/RegisterPage';
@@ -23,7 +26,10 @@ import AdminSecurityScannerConfigPage from '../pages/admin/security/AdminSecurit
 import RiskRulesPage from '../pages/admin/RiskRulesPage';
 import ModelManagementPage from '../pages/admin/ModelManagementPage';
 import SystemSettingsPage from '../pages/admin/SystemSettingsPage';
+import AgentVariantManagementPage from '../pages/admin/AgentVariantManagementPage';
 import UserSettingsPage from '../pages/settings/UserSettingsPage';
+import ChannelsPage from '../pages/settings/ChannelsPage';
+import BillingPage from '../pages/billing/BillingPage';
 import OpenClawConfigCenterPage from '../pages/openclaw/OpenClawConfigCenterPage';
 
 // Instance Pages
@@ -31,9 +37,16 @@ import InstanceListPage from '../pages/instances/InstanceListPage';
 import CreateInstancePage from '../pages/instances/CreateInstancePage';
 import InstanceDetailPage from '../pages/instances/InstanceDetailPage';
 import InstancePortalPage from '../pages/instances/InstancePortalPage';
-import TeamListPage from '../pages/teams/TeamListPage';
-import CreateTeamPage from '../pages/teams/CreateTeamPage';
-import TeamDetailPage from '../pages/teams/TeamDetailPage';
+import InstanceChatPage from '../pages/instances/InstanceChatPage';
+
+// Marketplace Pages
+import AgentMarketplacePage from '../pages/marketplace/AgentMarketplacePage';
+import QuickCreatePage from '../pages/marketplace/QuickCreatePage';
+import AgentDetailPage from '../pages/marketplace/AgentDetailPage';
+import ForkPage from '../pages/marketplace/ForkPage';
+
+// Admin Pages
+import VariantVersionHistoryPage from '../pages/admin/VariantVersionHistoryPage';
 
 // Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -103,23 +116,16 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
 };
 
-// Dashboard Redirect Component
-const DashboardRedirect: React.FC = () => {
-  const { user, isLoading } = useAuth();
-  const { t } = useI18n();
-
+const LandingPageRoute: React.FC = () => {
+  const { isLoading } = useAuth();
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-lg">{t('common.loading')}</div>
+        <div className="text-lg"> </div>
       </div>
     );
   }
-
-  if (user?.role === 'admin') {
-    return <Navigate to="/admin" replace />;
-  }
-  return <Navigate to="/dashboard" replace />;
+  return <LandingPage />;
 };
 
 function AppRoutes() {
@@ -152,6 +158,38 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/marketplace"
+        element={
+          <ProtectedRoute>
+            <AgentMarketplacePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug"
+        element={
+          <ProtectedRoute>
+            <AgentDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug/quick-create"
+        element={
+          <ProtectedRoute>
+            <QuickCreatePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug/fork"
+        element={
+          <ProtectedRoute>
+            <ForkPage />
+          </ProtectedRoute>
+        }
+      />
 
       {/* Instance Routes */}
       <Route
@@ -179,34 +217,18 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/instances/:id/chat"
+        element={
+          <ProtectedRoute>
+            <InstanceChatPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/portal"
         element={
           <ProtectedRoute>
             <InstancePortalPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/teams"
-        element={
-          <ProtectedRoute>
-            <TeamListPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/teams/new"
-        element={
-          <ProtectedRoute>
-            <CreateTeamPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/teams/:id"
-        element={
-          <ProtectedRoute>
-            <TeamDetailPage />
           </ProtectedRoute>
         }
       />
@@ -218,14 +240,30 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute>
-            <UserSettingsPage />
-          </ProtectedRoute>
-        }
-      />
+       <Route
+         path="/settings"
+         element={
+           <ProtectedRoute>
+             <UserSettingsPage />
+           </ProtectedRoute>
+         }
+       />
+       <Route
+         path="/settings/channels"
+         element={
+           <ProtectedRoute>
+             <ChannelsPage />
+           </ProtectedRoute>
+         }
+       />
+       <Route
+         path="/billing"
+         element={
+           <ProtectedRoute>
+             <BillingPage />
+           </ProtectedRoute>
+         }
+       />
 
       {/* Admin Routes */}
       <Route
@@ -332,9 +370,28 @@ function AppRoutes() {
           </AdminRoute>
         }
       />
+      <Route
+        path="/admin/agent-variants"
+        element={
+          <AdminRoute>
+            <AgentVariantManagementPage />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/agent-variants/:id/versions"
+        element={
+          <AdminRoute>
+            <VariantVersionHistoryPage />
+          </AdminRoute>
+        }
+      />
 
-      {/* Default Redirect */}
-      <Route path="/" element={<DashboardRedirect />} />
+      {/* Public Route - Landing Page */}
+      <Route
+        path="/"
+        element={<LandingPageRoute />}
+      />
     </Routes>
   );
 }

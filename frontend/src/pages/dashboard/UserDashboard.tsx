@@ -40,6 +40,9 @@ const UserDashboard: React.FC = () => {
   const recentInstances = [...instances].sort((a, b) => {
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
+  
+  const channelCount = 0;
+  const modelCount = 1;
 
   return (
     <UserLayout title={t('nav.userDashboard')}>
@@ -78,6 +81,39 @@ const UserDashboard: React.FC = () => {
               </dd>
             </div>
           </div>
+
+          <Link to="/settings/models" className="app-panel transition-all hover:-translate-y-0.5 hover:shadow-[0_30px_80px_-52px_rgba(72,44,24,0.62)]">
+            <div className="px-4 py-5 sm:p-6">
+              <dt className="truncate text-sm font-medium text-[#8f8681]">
+                AI 模型
+              </dt>
+              <dd className="mt-1 text-3xl font-semibold text-[#171212]">
+                {modelCount}
+              </dd>
+            </div>
+          </Link>
+
+          <Link to="/settings/channels" className="app-panel transition-all hover:-translate-y-0.5 hover:shadow-[0_30px_80px_-52px_rgba(72,44,24,0.62)]">
+            <div className="px-4 py-5 sm:p-6">
+              <dt className="truncate text-sm font-medium text-[#8f8681]">
+                渠道适配器
+              </dt>
+              <dd className="mt-1 text-3xl font-semibold text-[#171212]">
+                {channelCount}
+              </dd>
+            </div>
+          </Link>
+
+          <Link to="/billing" className="app-panel transition-all hover:-translate-y-0.5 hover:shadow-[0_30px_80px_-52px_rgba(72,44,24,0.62)]">
+            <div className="px-4 py-5 sm:p-6">
+              <dt className="truncate text-sm font-medium text-[#8f8681]">
+                计费管理
+              </dt>
+              <dd className="mt-1 text-3xl font-semibold text-[#171212]">
+                Basic Plan
+              </dd>
+            </div>
+          </Link>
         </div>
 
         {/* My Quota */}
@@ -175,6 +211,18 @@ const UserDashboard: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
               </svg>
               {t('userDashboard.viewAllInstances')}
+            </Link>
+            <Link to="/settings/channels" className="app-button-secondary text-base">
+              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              配置渠道
+            </Link>
+            <Link to="/settings/models" className="app-button-secondary text-base">
+              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.674M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.006 3.006 0 0013.5 16.5L12 15.5a3 3 0 00-1.5 2.121l-.548-.547a5 5 0 117.072 0z" />
+              </svg>
+              管理模型
             </Link>
           </div>
         </div>

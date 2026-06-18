@@ -18,15 +18,17 @@ type AgentHandler struct {
 	runtimeStatusService  services.InstanceRuntimeStatusService
 	configRevisionService services.InstanceConfigRevisionService
 	skillService          services.SkillService
+	systemImageService    services.SystemImageSettingService
 }
 
-func NewAgentHandler(agentService services.InstanceAgentService, commandService services.InstanceCommandService, runtimeStatusService services.InstanceRuntimeStatusService, configRevisionService services.InstanceConfigRevisionService, skillService services.SkillService) *AgentHandler {
+func NewAgentHandler(agentService services.InstanceAgentService, commandService services.InstanceCommandService, runtimeStatusService services.InstanceRuntimeStatusService, configRevisionService services.InstanceConfigRevisionService, skillService services.SkillService, systemImageService services.SystemImageSettingService) *AgentHandler {
 	return &AgentHandler{
 		agentService:          agentService,
 		commandService:        commandService,
 		runtimeStatusService:  runtimeStatusService,
 		configRevisionService: configRevisionService,
 		skillService:          skillService,
+		systemImageService:    systemImageService,
 	}
 }
 
@@ -255,4 +257,51 @@ func extractBearerToken(raw string) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
+}
+
+type AgentTemplateResponse struct {
+	Slug        string   `json:"slug"`
+	Name         string   `json:"name"`
+	DisplayName  string   `json:"display_name"`
+	Image        string   `json:"image"`
+	Description  string   `json:"description"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func (h *AgentHandler) ListAgentTemplates(c *gin.Context) {
+	settings, err := h.systemImageService.List()
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	agents := make([]AgentTemplateResponse, 0, len(settings))
+	for _, s := range settings {
+		if !s.IsEnabled {
+			continue
+		}
+		agents = append(agents, AgentTemplateResponse{
+			Slug:        s.InstanceType,
+			Name:         s.DisplayName,
+			DisplayName:  s.DisplayName,
+			Image:        s.Image,
+			Description:  s.InstanceType + " runtime instance",
+			Capabilities: getCapabilitiesForType(s.InstanceType),
+		})
+	}
+
+	utils.Success(c, http.StatusOK, "Agent templates retrieved successfully", gin.H{"agents": agents})
+}
+
+func getCapabilitiesForType(instanceType string) []string {
+	switch strings.ToLower(instanceType) {
+	case "openclaw":
+		return []string{"chat", "code", "v1_compatible", "desktop"}
+	case "hermes-agent":
+		return []string{"chat", "reasoning", "self_improvement", "skills"}
+	case "hermes":
+		return []string{"chat", "desktop", "v1_compatible"}
+	default:
+		return []string{"chat"}
+	}
 }

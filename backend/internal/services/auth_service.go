@@ -30,13 +30,15 @@ type TokenPair struct {
 // authService implements AuthService
 type authService struct {
 	userRepo  repository.UserRepository
+	quotaRepo repository.QuotaRepository
 	jwtConfig config.JWTConfig
 }
 
 // NewAuthService creates a new auth service
-func NewAuthService(userRepo repository.UserRepository, jwtConfig config.JWTConfig) AuthService {
+func NewAuthService(userRepo repository.UserRepository, quotaRepo repository.QuotaRepository, jwtConfig config.JWTConfig) AuthService {
 	return &authService{
 		userRepo:  userRepo,
+		quotaRepo: quotaRepo,
 		jwtConfig: jwtConfig,
 	}
 }
@@ -80,6 +82,11 @@ func (s *authService) Register(username, email, password string) (*models.User, 
 
 	if err := s.userRepo.Create(user); err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	// Create default quota for user
+	if _, err := s.quotaRepo.CreateDefaultQuota(user.ID); err != nil {
+		return nil, fmt.Errorf("failed to create default quota: %w", err)
 	}
 
 	return user, nil

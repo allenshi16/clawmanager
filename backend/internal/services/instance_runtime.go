@@ -16,11 +16,6 @@ type InstanceRuntimeConfig struct {
 	Env       map[string]string
 }
 
-const (
-	kasmClipboardSendDisabled   = "-SendCutText 0"
-	kasmClipboardAcceptDisabled = "-AcceptCutText 0"
-)
-
 func buildRuntimeConfig(instanceType, osType, osVersion string, registry, tag *string) InstanceRuntimeConfig {
 	if registry != nil && strings.TrimSpace(*registry) != "" && (tag == nil || strings.TrimSpace(*tag) == "") {
 		return InstanceRuntimeConfig{
@@ -52,25 +47,49 @@ func buildRuntimeConfig(instanceType, osType, osVersion string, registry, tag *s
 		config.Image = "lscr.io/linuxserver/webtop:ubuntu-xfce"
 		config.Port = 3001
 		config.MountPath = "/config"
-		config.Env = defaultWebtopDesktopEnv("ClawManager Desktop")
+		config.Env = map[string]string{
+			"TITLE":     "ClawManager Desktop",
+			"SUBFOLDER": "/",
+		}
 	case "webtop":
 		config.Image = "lscr.io/linuxserver/webtop:ubuntu-xfce"
 		config.Port = 3001
 		config.MountPath = "/config"
-		config.Env = defaultWebtopDesktopEnv("ClawManager Webtop")
+		config.Env = map[string]string{
+			"TITLE":     "ClawManager Webtop",
+			"SUBFOLDER": "/",
+		}
 	case "hermes":
 		config.Image = defaultSystemImageSettings["hermes"]
 		config.Port = 3001
-		config.MountPath = "/config"
-		config.Env = defaultWebtopDesktopEnv("Hermes Runtime")
+		config.MountPath = "/config/.hermes"
+		config.Env = map[string]string{
+			"TITLE":     "Hermes Runtime",
+			"SUBFOLDER": "/",
+		}
+	case "hermes-agent":
+		config.Image = defaultSystemImageSettings["hermes-agent"]
+		config.Port = 8642
+		config.MountPath = "/opt/data"
+		config.Env = map[string]string{
+			"HERMES_DASHBOARD": "1",
+		}
 	case "openclaw":
 		config.MountPath = "/config"
+		config.Port = 18789
 		if (registry == nil || strings.TrimSpace(*registry) == "") && (tag == nil || strings.TrimSpace(*tag) == "") {
 			config.Image = defaultSystemImageSettings["openclaw"]
+		} else if registry != nil && strings.TrimSpace(*registry) != "" && tag != nil && strings.TrimSpace(*tag) != "" {
+			config.Image = fmt.Sprintf("%s:%s", strings.TrimSpace(*registry), strings.TrimSpace(*tag))
+		} else if registry != nil && strings.TrimSpace(*registry) != "" {
+			config.Image = strings.TrimSpace(*registry)
 		} else {
-			config.Image = fmt.Sprintf("%s/%s:%s", defaultRegistry, "openclaw-desktop", defaultTag)
+			config.Image = fmt.Sprintf("%s:%s", defaultSystemImageSettings["openclaw"], strings.TrimSpace(*tag))
 		}
-		config.Env = defaultWebtopDesktopEnv("ClawManager Desktop")
+		config.Env = map[string]string{
+			"TITLE":     "ClawManager Desktop",
+			"SUBFOLDER": "/",
+		}
 	case "debian":
 		config.Image = fmt.Sprintf("%s/%s:%s", defaultRegistry, "debian-desktop", defaultTag)
 	case "centos":
@@ -85,6 +104,10 @@ func defaultPortForInstanceType(instanceType string) int32 {
 	switch instanceType {
 	case "ubuntu", "webtop", "hermes":
 		return 3001
+	case "openclaw":
+		return 18789
+	case "hermes-agent":
+		return 8642
 	default:
 		return 3001
 	}
@@ -95,7 +118,9 @@ func defaultMountPathForInstanceType(instanceType string) string {
 	case "ubuntu", "webtop", "openclaw":
 		return "/config"
 	case "hermes":
-		return "/config"
+		return "/config/.hermes"
+	case "hermes-agent":
+		return "/opt/data"
 	default:
 		return "/home/user/data"
 	}
@@ -104,20 +129,21 @@ func defaultMountPathForInstanceType(instanceType string) string {
 func defaultEnvForInstanceType(instanceType string) map[string]string {
 	switch instanceType {
 	case "ubuntu", "webtop", "openclaw":
-		return defaultWebtopDesktopEnv("ClawManager Desktop")
+		return map[string]string{
+			"TITLE":     "ClawManager Desktop",
+			"SUBFOLDER": "/",
+		}
 	case "hermes":
-		return defaultWebtopDesktopEnv("Hermes Runtime")
+		return map[string]string{
+			"TITLE":     "Hermes Runtime",
+			"SUBFOLDER": "/",
+		}
+	case "hermes-agent":
+		return map[string]string{
+			"HERMES_DASHBOARD": "1",
+		}
 	default:
 		return map[string]string{}
-	}
-}
-
-func defaultWebtopDesktopEnv(title string) map[string]string {
-	return map[string]string{
-		"TITLE":                    title,
-		"SUBFOLDER":                "/",
-		"KASM_SVC_SEND_CUT_TEXT":   kasmClipboardSendDisabled,
-		"KASM_SVC_ACCEPT_CUT_TEXT": kasmClipboardAcceptDisabled,
 	}
 }
 
@@ -146,7 +172,7 @@ func withInstanceProxyEnv(instanceType string, instanceID int, env map[string]st
 
 func usesWebtopImage(instanceType string) bool {
 	switch instanceType {
-	case "ubuntu", "webtop", "hermes", "openclaw":
+	case "ubuntu", "webtop", "hermes":
 		return true
 	default:
 		return false

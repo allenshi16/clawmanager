@@ -29,12 +29,11 @@ const (
 
 // Client wraps the Kubernetes client
 type Client struct {
-	Clientset      kubernetes.Interface
-	Config         *rest.Config
-	Namespace      string
-	StorageClass   string
-	HostPathPrefix string
-	Mode           ConnectionMode
+	Clientset    *kubernetes.Clientset
+	Config       *rest.Config
+	Namespace    string
+	StorageClass string
+	Mode         ConnectionMode
 }
 
 var (
@@ -97,12 +96,11 @@ func Initialize(cfg *config.Config) error {
 	}
 
 	globalClient = &Client{
-		Clientset:      clientset,
-		Config:         restConfig,
-		Namespace:      cfg.GetNamespace(),
-		StorageClass:   cfg.GetStorageClass(),
-		HostPathPrefix: cfg.GetHostPathPrefix(),
-		Mode:           detectedMode,
+		Clientset:    clientset,
+		Config:       restConfig,
+		Namespace:    cfg.GetNamespace(),
+		StorageClass: cfg.GetStorageClass(),
+		Mode:         detectedMode,
 	}
 
 	return nil
@@ -235,29 +233,9 @@ func (c *Client) GetPodName(instanceID int, instanceName string) string {
 	return sanitizeK8sName(fmt.Sprintf("clawreef-%d-%s", instanceID, instanceName))
 }
 
-// GetDeploymentName returns the deployment name for an instance.
-func (c *Client) GetDeploymentName(instanceID int, instanceName string) string {
-	return sanitizeK8sName(fmt.Sprintf("clawreef-%d-%s", instanceID, instanceName))
-}
-
 // GetPVCName returns the PVC name for an instance
 func (c *Client) GetPVCName(instanceID int) string {
 	return sanitizeK8sName(fmt.Sprintf("clawreef-%d-pvc", instanceID))
-}
-
-// GetTeamSharedPVCName returns the PVC name used for a Team shared workspace.
-func (c *Client) GetTeamSharedPVCName(teamID int) string {
-	return sanitizeK8sName(fmt.Sprintf("clawreef-team-%d-shared", teamID))
-}
-
-// GetTeamSecretName returns the Secret name used for Team Redis URL and token env.
-func (c *Client) GetTeamSecretName(teamID int) string {
-	return sanitizeK8sName(fmt.Sprintf("clawreef-team-%d-bus", teamID))
-}
-
-// GetTeamConfigMapName returns the ConfigMap name used for Team roster/config.
-func (c *Client) GetTeamConfigMapName(teamID int) string {
-	return sanitizeK8sName(fmt.Sprintf("clawreef-team-%d-config", teamID))
 }
 
 // GetServiceName returns the service name for an instance
@@ -273,6 +251,16 @@ func (c *Client) GetOpenClawBootstrapSecretName(instanceID int, instanceName str
 // GetNetworkPolicyName returns the default network policy name for an instance.
 func (c *Client) GetNetworkPolicyName(instanceID int, instanceName string) string {
 	return sanitizeK8sName(fmt.Sprintf("clawreef-%d-%s-netpol", instanceID, instanceName))
+}
+
+// GetTeamSecretName returns the Kubernetes Secret name for a team.
+func (c *Client) GetTeamSecretName(teamID int) string {
+	return sanitizeK8sName(fmt.Sprintf("clawreef-team-%d-secret", teamID))
+}
+
+// GetTeamConfigMapName returns the Kubernetes ConfigMap name for a team.
+func (c *Client) GetTeamConfigMapName(teamID int) string {
+	return sanitizeK8sName(fmt.Sprintf("clawreef-team-%d-config", teamID))
 }
 
 func sanitizeK8sName(name string) string {

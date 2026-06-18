@@ -3,11 +3,11 @@ server:
   mode: "debug"
 
 database:
-  host: "localhost"
-  port: 13306
+  host: "127.0.0.1"
+  port: 3307
   user: "root"
-  password: "123456"
-  database: "clawreef"
+  password: "root123"
+  database: "clawmanager"
 
 jwt:
   secret: "clawreef-dev-secret-key-change-in-production"
