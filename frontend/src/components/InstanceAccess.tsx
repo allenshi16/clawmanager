@@ -7,6 +7,9 @@ interface InstanceAccessProps {
   instanceId: number;
   instanceName: string;
   isRunning: boolean;
+  runtimeType?: "desktop" | "shell";
+  containerClassName?: string;
+  frameHeightClassName?: string;
   overlay?: {
     gatewayStatus: string;
     canControl: boolean;

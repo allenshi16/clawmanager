@@ -192,6 +192,7 @@ export interface CreateInstanceRequest {
   storage_class?: string;
   openclaw_config_plan?: OpenClawConfigPlan;
   skill_ids?: number[];
+  variant_id?: number;
 }
 
 export interface UpdateInstanceRequest {
