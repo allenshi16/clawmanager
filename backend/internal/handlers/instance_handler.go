@@ -3,15 +3,17 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"clawreef/internal/models"
 	"clawreef/internal/services"
-	"clawreef/internal/services/k8s"
 	"clawreef/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -23,12 +25,26 @@ import (
 // stream from the exec pipeline rather than a real workspace dump.
 const openclawMinArchiveBytes = 100
 
-// openclawMaxUploadBytes caps the size of an .openclaw import upload.
-// Must align with the edge nginx client_max_body_size so that oversize
-// uploads produce a structured JSON 413 here instead of an opaque HTML
-// 413 from nginx. See ClawManager/deployments/nginx/nginx.conf and
-// deployment/nginx-conf.yaml.
-const openclawMaxUploadBytes = 50 << 20 // 50 MiB
+const (
+	defaultWorkspaceArchiveMaxMiB = int64(500)
+	workspaceArchiveMaxMiBEnv     = "CLAWMANAGER_WORKSPACE_ARCHIVE_MAX_MIB"
+)
+
+func workspaceArchiveMaxMiB() int64 {
+	value := strings.TrimSpace(os.Getenv(workspaceArchiveMaxMiBEnv))
+	if value == "" {
+		return defaultWorkspaceArchiveMaxMiB
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return defaultWorkspaceArchiveMaxMiB
+	}
+	return parsed
+}
+
+func workspaceArchiveMaxBytes() int64 {
+	return workspaceArchiveMaxMiB() << 20
+}
 
 // InstanceHandler handles instance management requests
 type InstanceHandler struct {
@@ -39,14 +55,15 @@ type InstanceHandler struct {
 	instanceConfigRevisionService services.InstanceConfigRevisionService
 	accessService                 *services.InstanceAccessService
 	proxyService                  *services.InstanceProxyService
+	shellService                  *services.InstanceShellService
 	openClawTransferService       services.OpenClawTransferService
 	openClawConfigService         services.OpenClawConfigService
 	skillService                  services.SkillService
-	variantTemplateService        services.AgentVariantTemplateService
+	externalAccessService         services.InstanceExternalAccessService
 }
 
 // NewInstanceHandler creates a new instance handler
-func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService, variantTemplateService services.AgentVariantTemplateService) *InstanceHandler {
+func NewInstanceHandler(instanceService services.InstanceService, instanceAgentService services.InstanceAgentService, runtimeStatusService services.InstanceRuntimeStatusService, instanceCommandService services.InstanceCommandService, instanceConfigRevisionService services.InstanceConfigRevisionService, openClawConfigService services.OpenClawConfigService, skillService services.SkillService, externalAccessService services.InstanceExternalAccessService, proxyOptions ...services.InstanceProxyServiceOption) *InstanceHandler {
 	accessService := services.NewInstanceAccessService()
 	return &InstanceHandler{
 		instanceService:               instanceService,
@@ -55,11 +72,12 @@ func NewInstanceHandler(instanceService services.InstanceService, instanceAgentS
 		instanceCommandService:        instanceCommandService,
 		instanceConfigRevisionService: instanceConfigRevisionService,
 		accessService:                 accessService,
-		proxyService:                  services.NewInstanceProxyService(accessService),
+		proxyService:                  services.NewInstanceProxyService(accessService, proxyOptions...),
+		shellService:                  services.NewInstanceShellService(),
 		openClawTransferService:       services.NewOpenClawTransferService(),
 		openClawConfigService:         openClawConfigService,
 		skillService:                  skillService,
-		variantTemplateService:        variantTemplateService,
+		externalAccessService:         externalAccessService,
 	}
 }
 
@@ -84,13 +102,20 @@ type PublishConfigRevisionRequest struct {
 	SnapshotID int `json:"snapshot_id" binding:"required,min=1"`
 }
 
+type ExternalAccessRequest struct {
+	ExpiresMode   string     `json:"expires_mode,omitempty"`
+	ExpiresPreset string     `json:"expires_preset,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+}
+
 // CreateInstanceRequest represents a create instance request
 type CreateInstanceRequest struct {
 	Name                 string                       `json:"name" binding:"required,min=3,max=50"`
 	Description          *string                      `json:"description,omitempty"`
-	Type                 string                       `json:"type" binding:"required,oneof=openclaw ubuntu debian centos custom webtop hermes hermes-agent"`
-	VariantID            *int                         `json:"variant_id,omitempty"`
-	VariantVersion       *int                         `json:"-"`
+	Type                 string                       `json:"type" binding:"required,oneof=openclaw hermes"`
+	Mode                 string                       `json:"mode" binding:"omitempty,oneof=lite pro"`
+	InstanceMode         string                       `json:"instance_mode" binding:"omitempty,oneof=lite pro"`
+	RuntimeType          string                       `json:"runtime_type" binding:"omitempty,oneof=gateway desktop shell"`
 	CPUCores             float64                      `json:"cpu_cores" binding:"required,min=0.1,max=32"`
 	MemoryGB             int                          `json:"memory_gb" binding:"required,min=1,max=128"`
 	DiskGB               int                          `json:"disk_gb" binding:"required,min=10,max=1000"`
@@ -193,67 +218,13 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		return
 	}
 
-	if req.VariantID != nil && h.variantTemplateService != nil {
-		expansion, err := h.variantTemplateService.ResolveForInstance(*req.VariantID)
-		if err != nil {
-			utils.Error(c, http.StatusBadRequest, "Failed to resolve variant template: "+err.Error())
-			return
-		}
-
-		template, err := h.variantTemplateService.GetByID(*req.VariantID)
-		if err != nil {
-			utils.Error(c, http.StatusBadRequest, "Failed to get variant template: "+err.Error())
-			return
-		}
-
-		req.Type = expansion.RuntimeType
-
-		if req.CPUCores <= 0.5 || req.CPUCores == 1 {
-			req.CPUCores = expansion.RecommendedCPU
-		}
-		if req.MemoryGB <= 1 || req.MemoryGB == 2 {
-			req.MemoryGB = expansion.RecommendedMemory
-		}
-		if req.DiskGB <= 10 || req.DiskGB == 20 {
-			req.DiskGB = expansion.RecommendedDisk
-		}
-
-		if len(expansion.SkillIDs) > 0 {
-			existingIDs := make(map[int]bool)
-			for _, id := range req.SkillIDs {
-				existingIDs[id] = true
-			}
-			for _, id := range expansion.SkillIDs {
-				if !existingIDs[id] {
-					req.SkillIDs = append(req.SkillIDs, id)
-				}
-			}
-		}
-		if expansion.ConfigPlan != nil && req.OpenClawConfigPlan == nil {
-			mode, _ := expansion.ConfigPlan["mode"].(string)
-			req.OpenClawConfigPlan = &services.OpenClawConfigPlan{Mode: mode}
-			if bundleID, ok := expansion.ConfigPlan["bundle_id"].(float64); ok {
-				bid := int(bundleID)
-				req.OpenClawConfigPlan.BundleID = &bid
-			}
-			if resourceIDs, ok := expansion.ConfigPlan["resource_ids"].([]interface{}); ok {
-				for _, rid := range resourceIDs {
-					if ridFloat, ok := rid.(float64); ok {
-						req.OpenClawConfigPlan.ResourceIDs = append(req.OpenClawConfigPlan.ResourceIDs, int(ridFloat))
-					}
-				}
-			}
-		}
-
-		if template != nil {
-			req.VariantVersion = &template.Version
-		}
-	}
-
 	createReq := services.CreateInstanceRequest{
 		Name:                 req.Name,
 		Description:          req.Description,
 		Type:                 req.Type,
+		Mode:                 req.Mode,
+		InstanceMode:         req.InstanceMode,
+		RuntimeType:          req.RuntimeType,
 		CPUCores:             req.CPUCores,
 		MemoryGB:             req.MemoryGB,
 		DiskGB:               req.DiskGB,
@@ -265,8 +236,6 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		ImageTag:             req.ImageTag,
 		EnvironmentOverrides: req.EnvironmentOverrides,
 		StorageClass:         req.StorageClass,
-		VariantID:            req.VariantID,
-		VariantVersion:       req.VariantVersion,
 		OpenClawConfigPlan:   req.OpenClawConfigPlan,
 	}
 
@@ -276,18 +245,54 @@ func (h *InstanceHandler) CreateInstance(c *gin.Context) {
 		return
 	}
 
-	for _, skillID := range req.SkillIDs {
+	skillIDs, err := h.resolveCreateInstanceSkillIDs(userID.(int), req)
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+
+	for _, skillID := range skillIDs {
 		if _, err := h.skillService.AttachSkillToInstance(instance.ID, skillID); err != nil {
 			utils.HandleError(c, err)
 			return
 		}
 	}
 
-	if req.VariantID != nil && h.variantTemplateService != nil {
-		_ = h.variantTemplateService.IncrementUsageCount(*req.VariantID)
+	utils.Success(c, http.StatusCreated, "Instance created successfully", instance)
+}
+
+func (h *InstanceHandler) resolveCreateInstanceSkillIDs(userID int, req CreateInstanceRequest) ([]int, error) {
+	seen := map[int]struct{}{}
+	result := make([]int, 0, len(req.SkillIDs))
+	for _, skillID := range req.SkillIDs {
+		if skillID <= 0 {
+			continue
+		}
+		if _, exists := seen[skillID]; exists {
+			continue
+		}
+		seen[skillID] = struct{}{}
+		result = append(result, skillID)
 	}
 
-	utils.Success(c, http.StatusCreated, "Instance created successfully", instance)
+	if h.openClawConfigService != nil {
+		bundleSkillIDs, err := h.openClawConfigService.ResolveBundleSkillIDs(userID, req.OpenClawConfigPlan)
+		if err != nil {
+			return nil, err
+		}
+		for _, skillID := range bundleSkillIDs {
+			if skillID <= 0 {
+				continue
+			}
+			if _, exists := seen[skillID]; exists {
+				continue
+			}
+			seen[skillID] = struct{}{}
+			result = append(result, skillID)
+		}
+	}
+
+	return result, nil
 }
 
 // GetInstance gets an instance by ID
@@ -559,6 +564,13 @@ func (h *InstanceHandler) GetInstanceStatus(c *gin.Context) {
 		return
 	}
 
+	if userRole != "admin" {
+		utils.Success(c, http.StatusOK, "Instance status retrieved successfully", gin.H{
+			"instance_status": buildUserSafeInstanceStatus(instance, status),
+		})
+		return
+	}
+
 	runtime, _ := h.runtimeStatusService.GetByInstanceID(id)
 	agent, _ := h.instanceAgentService.GetPayloadByInstanceID(id)
 
@@ -567,6 +579,43 @@ func (h *InstanceHandler) GetInstanceStatus(c *gin.Context) {
 		"runtime":         runtime,
 		"agent":           agent,
 	})
+}
+
+func buildUserSafeInstanceStatus(instance *models.Instance, status *services.InstanceStatus) map[string]interface{} {
+	if status == nil {
+		return map[string]interface{}{}
+	}
+	payload := map[string]interface{}{
+		"instance_id":  status.InstanceID,
+		"status":       status.Status,
+		"availability": status.Availability,
+		"created_at":   status.CreatedAt,
+	}
+	if payload["availability"] == "" {
+		payload["availability"] = availabilityForInstanceStatus(status.Status)
+	}
+	if status.StartedAt != nil {
+		payload["started_at"] = status.StartedAt
+	}
+	if instance == nil {
+		return payload
+	}
+	if agentType, ok := services.NormalizeV2RuntimeType(instance.Type); ok && (strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "gateway") || strings.EqualFold(strings.TrimSpace(instance.InstanceMode), "lite")) {
+		payload["agent_type"] = agentType
+		payload["workspace_usage_bytes"] = instance.WorkspaceUsageBytes
+	}
+	return payload
+}
+
+func availabilityForInstanceStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running":
+		return "available"
+	case "creating":
+		return "starting"
+	default:
+		return "unavailable"
+	}
 }
 
 func (h *InstanceHandler) GetRuntimeDetails(c *gin.Context) {
@@ -783,8 +832,13 @@ func (h *InstanceHandler) GenerateAccessToken(c *gin.Context) {
 		return
 	}
 
+	if strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
+		utils.Error(c, http.StatusBadRequest, "Desktop access is not available for shell runtime instances")
+		return
+	}
+
 	// Generate proxy entry URL. The actual Service remains internal-only.
-	accessURL := h.proxyService.GetProxyURL(instance.ID, "")
+	accessURL := h.proxyService.GetProxyURLForInstance(instance, "")
 
 	if accessURL == "" {
 		utils.Error(c, http.StatusServiceUnavailable, "Unable to generate access URL")
@@ -822,7 +876,7 @@ func (h *InstanceHandler) GenerateAccessToken(c *gin.Context) {
 	response := map[string]interface{}{
 		"token":      token.Token,
 		"access_url": accessURL,
-		"proxy_url":  h.proxyService.GetProxyURL(instance.ID, token.Token),
+		"proxy_url":  h.proxyService.GetProxyURLForInstance(instance, token.Token),
 		"expires_at": token.ExpiresAt,
 	}
 
@@ -859,6 +913,31 @@ func (h *InstanceHandler) AccessInstance(c *gin.Context) {
 
 	// Redirect to actual access URL
 	c.Redirect(http.StatusTemporaryRedirect, accessToken.AccessURL)
+}
+
+func (h *InstanceHandler) StreamShell(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+
+	if !strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
+		utils.Error(c, http.StatusBadRequest, "Shell access is only available for shell runtime instances")
+		return
+	}
+
+	if instance.Status != "running" {
+		utils.Error(c, http.StatusBadRequest, "Instance is not running")
+		return
+	}
+
+	if err := h.shellService.Stream(c.Request.Context(), instance.UserID, instance.ID, c.Writer, c.Request); err != nil {
+		if !c.Writer.Written() {
+			utils.HandleError(c, err)
+			return
+		}
+		fmt.Printf("Shell stream for instance %d closed with error: %v\n", instance.ID, err)
+	}
 }
 
 // ForceSync manually triggers a status sync
@@ -909,34 +988,56 @@ func (h *InstanceHandler) ProxyInstance(c *gin.Context) {
 		return
 	}
 
-	// Get token from query parameter
-	token := c.Query("token")
-	if token == "" {
-		cookieToken, err := c.Cookie(fmt.Sprintf("instance_access_%d", id))
-		if err != nil || cookieToken == "" {
-			utils.Error(c, http.StatusBadRequest, "Access token required")
-			return
-		}
-		token = cookieToken
-	} else {
-		// Promote the one-time query token into a cookie so iframe subresources and
-		// websocket requests can reuse it without appending the token everywhere.
-		c.SetCookie(
-			fmt.Sprintf("instance_access_%d", id),
-			token,
-			int(time.Hour.Seconds()),
-			fmt.Sprintf("/api/v1/instances/%d/proxy", id),
-			"",
-			false,
-			true,
-		)
+	token, ok := h.proxyAccessToken(c, id)
+	if !ok {
+		return
 	}
 
+	h.proxyInstanceWithToken(c, id, token)
+}
+
+func (h *InstanceHandler) proxyAccessToken(c *gin.Context, id int) (string, bool) {
+	cookieName := fmt.Sprintf("instance_access_%d", id)
+	if cookieToken, err := c.Cookie(cookieName); err == nil && strings.TrimSpace(cookieToken) != "" {
+		if accessToken, validateErr := h.accessService.ValidateToken(cookieToken); validateErr == nil && accessToken.InstanceID == id {
+			return cookieToken, true
+		}
+	}
+
+	queryToken := strings.TrimSpace(c.Query("token"))
+	if queryToken == "" {
+		utils.Error(c, http.StatusBadRequest, "Access token required")
+		return "", false
+	}
+	accessToken, err := h.accessService.ValidateToken(queryToken)
+	if err != nil || accessToken.InstanceID != id {
+		utils.Error(c, http.StatusUnauthorized, "Access token expired or invalid")
+		return "", false
+	}
+
+	// Promote only a validated ClawManager access token. Runtime applications may
+	// also use a token query parameter for their own websocket/session protocol.
+	c.SetCookie(
+		cookieName,
+		queryToken,
+		int(time.Hour.Seconds()),
+		fmt.Sprintf("/api/v1/instances/%d/proxy", id),
+		"",
+		false,
+		true,
+	)
+	return queryToken, true
+}
+
+func (h *InstanceHandler) proxyInstanceWithToken(c *gin.Context, id int, token string) {
 	// Check if it's a WebSocket upgrade request
 	if strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
-		err = h.proxyService.ProxyWebSocket(c.Request.Context(), id, token, c.Writer, c.Request)
-		if err != nil {
-			http.Error(c.Writer, err.Error(), http.StatusBadGateway)
+		if err := h.proxyService.ProxyWebSocket(c.Request.Context(), id, token, c.Writer, c.Request); err != nil {
+			if errors.Is(err, services.ErrInstanceGatewayUnavailable) {
+				http.Error(c.Writer, "Instance gateway is not available", http.StatusServiceUnavailable)
+			} else {
+				http.Error(c.Writer, err.Error(), http.StatusBadGateway)
+			}
 		}
 		return
 	}
@@ -949,8 +1050,7 @@ func (h *InstanceHandler) ProxyInstance(c *gin.Context) {
 	}
 
 	// Proxy regular HTTP request
-	err = h.proxyService.ProxyRequest(c.Request.Context(), id, token, gatewayToken, c.Writer, c.Request)
-	if err != nil {
+	if err := h.proxyService.ProxyRequest(c.Request.Context(), id, token, gatewayToken, c.Writer, c.Request); err != nil {
 		// Log the error
 		fmt.Printf("Proxy error for instance %d: %v\n", id, err)
 
@@ -960,6 +1060,8 @@ func (h *InstanceHandler) ProxyInstance(c *gin.Context) {
 			http.Error(c.Writer, "Access token expired or invalid", http.StatusUnauthorized)
 		} else if err.Error() == "token does not match instance" {
 			http.Error(c.Writer, "Token does not match instance", http.StatusForbidden)
+		} else if errors.Is(err, services.ErrInstanceGatewayUnavailable) {
+			http.Error(c.Writer, "Instance gateway is not available", http.StatusServiceUnavailable)
 		} else {
 			http.Error(c.Writer, fmt.Sprintf("Failed to proxy request: %v", err), http.StatusBadGateway)
 		}
@@ -994,6 +1096,12 @@ func (h *InstanceHandler) ExportOpenClaw(c *gin.Context) {
 
 	if len(archive) < openclawMinArchiveBytes {
 		utils.Error(c, http.StatusInternalServerError, "export produced an empty archive")
+		return
+	}
+	maxArchiveBytes := workspaceArchiveMaxBytes()
+	if int64(len(archive)) > maxArchiveBytes {
+		utils.Error(c, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("archive too large; maximum archive size is %d MiB", maxArchiveBytes>>20))
 		return
 	}
 
@@ -1034,6 +1142,12 @@ func (h *InstanceHandler) ExportHermes(c *gin.Context) {
 		utils.Error(c, http.StatusInternalServerError, "export produced an empty archive")
 		return
 	}
+	maxArchiveBytes := workspaceArchiveMaxBytes()
+	if int64(len(archive)) > maxArchiveBytes {
+		utils.Error(c, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("archive too large; maximum archive size is %d MiB", maxArchiveBytes>>20))
+		return
+	}
 
 	filename := fmt.Sprintf("%s.hermes.tar.gz", sanitizeDownloadName(instance.Name, "hermes-workspace"))
 	c.Header("Content-Type", "application/gzip")
@@ -1058,27 +1172,27 @@ func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 		return
 	}
 
-	// Cap the request body early so oversize uploads fail with a structured
-	// JSON 413 instead of nginx's opaque HTML 413 or a surprise ENOSPC deep
-	// inside multipart parsing. MaxBytesReader trips ParseMultipartForm
+	// Cap the request body at the same deployment limit used by nginx. When
+	// the request reaches the backend, MaxBytesReader trips ParseMultipartForm
 	// (invoked by c.FormFile) with a typed *http.MaxBytesError.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openclawMaxUploadBytes)
+	maxArchiveBytes := workspaceArchiveMaxBytes()
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxArchiveBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			utils.Error(c, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+				fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
 			return
 		}
 		utils.Error(c, http.StatusBadRequest, "file is required")
 		return
 	}
 
-	if fileHeader.Size > openclawMaxUploadBytes {
+	if fileHeader.Size > maxArchiveBytes {
 		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+			fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
 		return
 	}
 
@@ -1089,7 +1203,7 @@ func (h *InstanceHandler) ImportOpenClaw(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if err := h.openClawTransferService.Import(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, openclawMaxUploadBytes)); err != nil {
+	if err := h.openClawTransferService.Import(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, maxArchiveBytes)); err != nil {
 		utils.HandleError(c, err)
 		return
 	}
@@ -1113,23 +1227,24 @@ func (h *InstanceHandler) ImportHermes(c *gin.Context) {
 		return
 	}
 
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openclawMaxUploadBytes)
+	maxArchiveBytes := workspaceArchiveMaxBytes()
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxArchiveBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			utils.Error(c, http.StatusRequestEntityTooLarge,
-				fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+				fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
 			return
 		}
 		utils.Error(c, http.StatusBadRequest, "file is required")
 		return
 	}
 
-	if fileHeader.Size > openclawMaxUploadBytes {
+	if fileHeader.Size > maxArchiveBytes {
 		utils.Error(c, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("archive too large; maximum upload size is %d MiB", openclawMaxUploadBytes>>20))
+			fmt.Sprintf("archive too large; maximum upload size is %d MiB", maxArchiveBytes>>20))
 		return
 	}
 
@@ -1140,7 +1255,7 @@ func (h *InstanceHandler) ImportHermes(c *gin.Context) {
 	}
 	defer file.Close()
 
-	if err := h.openClawTransferService.ImportHermes(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, openclawMaxUploadBytes)); err != nil {
+	if err := h.openClawTransferService.ImportHermes(c.Request.Context(), instance.UserID, instance.ID, io.LimitReader(file, maxArchiveBytes)); err != nil {
 		utils.HandleError(c, err)
 		return
 	}
@@ -1177,118 +1292,426 @@ func (h *InstanceHandler) requireOwnedInstance(c *gin.Context) (*models.Instance
 	return instance, true
 }
 
-type UpgradeCheckResponse struct {
-	InstanceID       int    `json:"instance_id"`
-	VariantID        *int   `json:"variant_id"`
-	VariantName      string `json:"variant_name,omitempty"`
-	CurrentVersion   *int   `json:"current_version,omitempty"`
-	LatestVersion    int    `json:"latest_version,omitempty"`
-	UpgradeAvailable bool   `json:"upgrade_available"`
-}
-
-func (h *InstanceHandler) UpgradeCheck(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
-		return
-	}
-
-	instance, err := h.instanceService.GetByID(id)
-	if err != nil {
-		utils.HandleError(c, err)
-		return
-	}
-
-	resp := UpgradeCheckResponse{
-		InstanceID: id,
-		VariantID:  instance.VariantID,
-	}
-
-	if instance.VariantID == nil {
-		utils.Success(c, http.StatusOK, "Instance is not linked to a variant template", resp)
-		return
-	}
-
-	template, err := h.variantTemplateService.GetByID(*instance.VariantID)
-	if err != nil {
-		utils.Success(c, http.StatusOK, "Variant template not found", resp)
-		return
-	}
-
-	resp.VariantName = template.Name
-	resp.LatestVersion = template.Version
-	resp.CurrentVersion = instance.VariantVersion
-	resp.UpgradeAvailable = instance.VariantVersion == nil || *instance.VariantVersion < template.Version
-
-	utils.Success(c, http.StatusOK, "Upgrade check completed", resp)
-}
-
-func (h *InstanceHandler) UpgradeInstance(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "Invalid instance ID")
-		return
-	}
-
-	instance, err := h.instanceService.GetByID(id)
-	if err != nil {
-		utils.HandleError(c, err)
-		return
-	}
-
-	if instance.VariantID == nil {
-		utils.Error(c, http.StatusBadRequest, "Instance is not linked to a variant template")
-		return
-	}
-
-	template, err := h.variantTemplateService.GetByID(*instance.VariantID)
-	if err != nil {
-		utils.HandleError(c, err)
-		return
-	}
-
-	if instance.VariantVersion != nil && *instance.VariantVersion >= template.Version {
-		utils.Success(c, http.StatusOK, "Instance is already up to date", nil)
-		return
-	}
-
-	if err := h.instanceService.UpdateInstanceResources(id, template.RecommendedCPU, template.RecommendedMemory, template.RecommendedDisk, template.Version); err != nil {
-		utils.HandleError(c, err)
-		return
-	}
-
-	utils.Success(c, http.StatusOK, "Instance upgraded to latest template version", nil)
-}
-
-// ApproveDevicePairing runs `openclaw devices approve --latest` in the instance pod
-// to approve the most recent pending device pairing request.
-func (h *InstanceHandler) ApproveDevicePairing(c *gin.Context) {
+func (h *InstanceHandler) GetExternalAccess(c *gin.Context) {
 	instance, ok := h.requireOwnedInstance(c)
 	if !ok {
 		return
 	}
-
-	if instance.Type != "openclaw" {
-		utils.Error(c, http.StatusBadRequest, "Device pairing is only available for OpenClaw instances")
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
 		return
 	}
-
-	if instance.Status != "running" {
-		utils.Error(c, http.StatusBadRequest, "Instance must be running to approve device pairing")
-		return
-	}
-
-	ps := k8s.NewPodService()
-	output, err := ps.ExecInPod(c.Request.Context(), instance.UserID, instance.ID, []string{
-		"sh", "-lc",
-		"openclaw devices approve --latest 2>&1 || echo 'no pending devices found'",
-	})
+	access, err := h.externalAccessService.Get(c.Request.Context(), instance.ID)
 	if err != nil {
 		utils.HandleError(c, err)
 		return
 	}
+	payload := gin.H{"external_access": access}
+	if shareURL := services.ExternalAccessShareURL(access); shareURL != "" {
+		payload["share_url"] = shareURL
+	}
+	if password := services.ExternalAccessPassword(access); password != "" {
+		payload["password"] = password
+	}
+	utils.Success(c, http.StatusOK, "External access retrieved successfully", payload)
+}
 
-	utils.Success(c, http.StatusOK, "Device pairing processed", gin.H{"output": output})
+func (h *InstanceHandler) EnableShareLink(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
+		return
+	}
+	var req ExternalAccessRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		utils.ValidationError(c, err)
+		return
+	}
+	userID, _ := c.Get("userID")
+	result, err := h.externalAccessService.EnableShareLink(c.Request.Context(), instance.ID, userID.(int), externalAccessExpirationRequest(req))
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Share link enabled successfully", result)
+}
+
+func (h *InstanceHandler) CreateExternalAccessPassword(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
+		return
+	}
+	var req ExternalAccessRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		utils.ValidationError(c, err)
+		return
+	}
+	userID, _ := c.Get("userID")
+	result, err := h.externalAccessService.CreatePassword(c.Request.Context(), instance.ID, userID.(int), externalAccessExpirationRequest(req))
+	if err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "Share link password created successfully", result)
+}
+
+func (h *InstanceHandler) DisableExternalAccess(c *gin.Context) {
+	instance, ok := h.requireOwnedInstance(c)
+	if !ok {
+		return
+	}
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
+		return
+	}
+	if err := h.externalAccessService.Disable(c.Request.Context(), instance.ID); err != nil {
+		utils.HandleError(c, err)
+		return
+	}
+	utils.Success(c, http.StatusOK, "External access disabled successfully", nil)
+}
+
+func (h *InstanceHandler) OpenShortExternalAccess(c *gin.Context) {
+	if h.externalAccessService == nil {
+		utils.Error(c, http.StatusServiceUnavailable, "External access is not configured")
+		return
+	}
+	code := strings.TrimSpace(c.Param("code"))
+	access, err := h.externalAccessService.ResolveShortLink(c.Request.Context(), code)
+	if err != nil {
+		utils.Error(c, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	var instance *models.Instance
+	var token string
+	canonicalAccessURL := ""
+	switch access.AuthMode {
+	case services.ExternalAccessModeShareLink:
+		if _, err := h.externalAccessService.ValidateShortLink(c.Request.Context(), code, ""); err != nil {
+			utils.Error(c, http.StatusUnauthorized, err.Error())
+			return
+		}
+	case services.ExternalAccessModePassword:
+		token = h.validShortLinkAccessToken(c, code, access.InstanceID)
+		if token == "" {
+			password := externalPassword(c)
+			isPasswordFormPost := c.Request.Method == http.MethodPost && password == ""
+			if isPasswordFormPost {
+				password = c.PostForm("password")
+			}
+			if strings.TrimSpace(password) == "" {
+				if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+					renderShortLinkPasswordForm(c, code, "")
+					return
+				}
+				utils.Error(c, http.StatusUnauthorized, "share link password is required")
+				return
+			}
+			if _, err := h.externalAccessService.ValidateShortLink(c.Request.Context(), code, password); err != nil {
+				if c.Request.Method == http.MethodPost || shortExternalAccessWantsHTML(c) {
+					renderShortLinkPasswordForm(c, code, "Invalid password")
+					return
+				}
+				utils.Error(c, http.StatusUnauthorized, err.Error())
+				return
+			}
+			var ok bool
+			instance, ok = h.requireExternalAccessInstance(c, access)
+			if !ok {
+				return
+			}
+			instanceToken, ok := h.issueShortExternalAccessToken(c, instance, code)
+			if !ok {
+				return
+			}
+			token = instanceToken.Token
+			canonicalAccessURL = instanceToken.AccessURL
+			if c.Request.Method == http.MethodPost {
+				c.Redirect(http.StatusSeeOther, shortExternalAccessEntryPath(code))
+				return
+			}
+		}
+	default:
+		utils.Error(c, http.StatusBadRequest, "Unsupported share link mode")
+		return
+	}
+
+	if instance == nil {
+		var ok bool
+		instance, ok = h.requireExternalAccessInstance(c, access)
+		if !ok {
+			return
+		}
+	}
+	if token == "" {
+		instanceToken, ok := h.issueShortExternalAccessToken(c, instance, code)
+		if !ok {
+			return
+		}
+		token = instanceToken.Token
+		canonicalAccessURL = instanceToken.AccessURL
+	} else {
+		setShortExternalAccessCookies(c, instance.ID, code, token, int(time.Hour.Seconds()))
+		canonicalAccessURL = h.proxyService.GetProxyURLForInstance(instance, "")
+	}
+
+	originalPath := c.Request.URL.Path
+	if redirectTarget := shortExternalAccessEntryRedirectTarget(c.Request.Method, originalPath, code, canonicalAccessURL); redirectTarget != "" {
+		c.Redirect(http.StatusSeeOther, redirectTarget)
+		return
+	}
+
+	originalRawPath := c.Request.URL.RawPath
+	originalAuthorization := c.Request.Header.Get("Authorization")
+	originalPassword := c.Request.Header.Get("X-Password")
+	c.Request.URL.Path = shortExternalAccessProxyPath(originalPath, code, instance.ID)
+	c.Request.URL.RawPath = ""
+	c.Request.Header.Del("Authorization")
+	c.Request.Header.Del("X-Password")
+	defer func() {
+		c.Request.URL.Path = originalPath
+		c.Request.URL.RawPath = originalRawPath
+		if originalAuthorization != "" {
+			c.Request.Header.Set("Authorization", originalAuthorization)
+		}
+		if originalPassword != "" {
+			c.Request.Header.Set("X-Password", originalPassword)
+		}
+	}()
+
+	h.proxyInstanceWithToken(c, instance.ID, token)
+}
+
+func bearerToken(header string) string {
+	value := strings.TrimSpace(header)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		return strings.TrimSpace(value[len("bearer "):])
+	}
+	return value
+}
+
+func externalPassword(c *gin.Context) string {
+	if password := strings.TrimSpace(c.GetHeader("X-Password")); password != "" {
+		return password
+	}
+	return bearerToken(c.GetHeader("Authorization"))
+}
+
+func externalAccessExpirationRequest(req ExternalAccessRequest) services.ExternalAccessExpirationRequest {
+	return services.ExternalAccessExpirationRequest{
+		Mode:      strings.TrimSpace(req.ExpiresMode),
+		Preset:    strings.TrimSpace(req.ExpiresPreset),
+		ExpiresAt: req.ExpiresAt,
+	}
+}
+
+func (h *InstanceHandler) requireExternalAccessInstance(c *gin.Context, access *models.InstanceExternalAccess) (*models.Instance, bool) {
+	if access == nil {
+		utils.Error(c, http.StatusUnauthorized, "External access is not enabled")
+		return nil, false
+	}
+	instance, err := h.instanceService.GetByID(access.InstanceID)
+	if err != nil {
+		utils.HandleError(c, err)
+		return nil, false
+	}
+	if instance == nil {
+		utils.Error(c, http.StatusNotFound, "Instance not found")
+		return nil, false
+	}
+	if instance.Status != "running" {
+		utils.Error(c, http.StatusServiceUnavailable, "Instance is not running")
+		return nil, false
+	}
+	if strings.EqualFold(strings.TrimSpace(instance.RuntimeType), "shell") {
+		utils.Error(c, http.StatusBadRequest, "External desktop access is not available for shell runtime instances")
+		return nil, false
+	}
+	return instance, true
+}
+
+func (h *InstanceHandler) issueShortExternalAccessToken(c *gin.Context, instance *models.Instance, code string) (*services.AccessToken, bool) {
+	accessURL := h.proxyService.GetProxyURLForInstance(instance, "")
+	if accessURL == "" {
+		utils.Error(c, http.StatusServiceUnavailable, "Unable to generate access URL")
+		return nil, false
+	}
+	instanceToken, err := h.accessService.GenerateToken(
+		instance.UserID,
+		instance.ID,
+		instance.Type,
+		accessURL,
+		h.proxyService.GetTargetPortForInstance(instance),
+		1*time.Hour,
+	)
+	if err != nil {
+		utils.HandleError(c, err)
+		return nil, false
+	}
+	setShortExternalAccessCookies(c, instance.ID, code, instanceToken.Token, int(time.Hour.Seconds()))
+	return instanceToken, true
+}
+
+func (h *InstanceHandler) validShortLinkAccessToken(c *gin.Context, code string, instanceID int) string {
+	if h == nil || h.accessService == nil {
+		return ""
+	}
+	token, err := c.Cookie(shortExternalAccessCookieName(code))
+	if err != nil || strings.TrimSpace(token) == "" {
+		return ""
+	}
+	accessToken, err := h.accessService.ValidateToken(token)
+	if err != nil || accessToken.InstanceID != instanceID {
+		return ""
+	}
+	return token
+}
+
+func setShortExternalAccessCookies(c *gin.Context, instanceID int, code, token string, maxAge int) {
+	c.SetCookie(
+		fmt.Sprintf("instance_access_%d", instanceID),
+		token,
+		maxAge,
+		fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID),
+		"",
+		false,
+		true,
+	)
+	c.SetCookie(
+		shortExternalAccessCookieName(code),
+		token,
+		maxAge,
+		shortExternalAccessCookiePath(code),
+		"",
+		false,
+		true,
+	)
+}
+
+func shortExternalAccessCookieName(code string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	var builder strings.Builder
+	for _, r := range code {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '_' || r == '-':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	if builder.Len() == 0 {
+		return "share_link_access"
+	}
+	return "share_link_access_" + builder.String()
+}
+
+func shortExternalAccessCookiePath(code string) string {
+	code = strings.Trim(strings.TrimSpace(code), "/")
+	if code == "" {
+		return "/s"
+	}
+	return "/s/" + code
+}
+
+func shortExternalAccessEntryPath(code string) string {
+	return shortExternalAccessCookiePath(code) + "/"
+}
+
+func shortExternalAccessEntryRedirectTarget(method, requestPath, code, canonicalPath string) string {
+	if method != http.MethodGet && method != http.MethodHead {
+		return ""
+	}
+	path := strings.TrimSpace(requestPath)
+	entryPath := shortExternalAccessEntryPath(code)
+	if path != entryPath && path != strings.TrimSuffix(entryPath, "/") {
+		return ""
+	}
+	target := strings.TrimSpace(canonicalPath)
+	if target == "" {
+		return ""
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(parsed.Path, "/api/v1/instances/") {
+		return ""
+	}
+	return parsed.Path
+}
+
+func shortExternalAccessWantsHTML(c *gin.Context) bool {
+	accept := strings.ToLower(c.GetHeader("Accept"))
+	return strings.Contains(accept, "text/html")
+}
+
+func renderShortLinkPasswordForm(c *gin.Context, code, errorMessage string) {
+	action := html.EscapeString(shortExternalAccessEntryPath(code))
+	errorHTML := ""
+	if strings.TrimSpace(errorMessage) != "" {
+		errorHTML = fmt.Sprintf(`<div class="error">%s</div>`, html.EscapeString(errorMessage))
+	}
+	body := fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Share link password</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f6f8fb; color: #0f172a; }
+    main { width: min(92vw, 380px); border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; box-shadow: 0 18px 45px rgba(15, 23, 42, .08); padding: 28px; }
+    h1 { margin: 0 0 18px; font-size: 20px; line-height: 1.25; }
+    label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; color: #334155; }
+    input { box-sizing: border-box; width: 100%%; height: 42px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 12px; font-size: 14px; outline: none; }
+    input:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79, 70, 229, .14); }
+    button { width: 100%%; height: 42px; margin-top: 14px; border: 0; border-radius: 6px; background: #4f46e5; color: white; font-size: 14px; font-weight: 700; cursor: pointer; }
+    .error { margin-bottom: 12px; border: 1px solid #fecaca; border-radius: 6px; background: #fef2f2; color: #b91c1c; padding: 10px 12px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Share link password</h1>
+    %s
+    <form method="post" action="%s" autocomplete="off">
+      <label for="share-link-password">Password</label>
+      <input id="share-link-password" name="password" type="password" autofocus required>
+      <button type="submit">Open</button>
+    </form>
+  </main>
+</body>
+</html>`, errorHTML, action)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
+}
+
+func shortExternalAccessProxyPath(requestPath, code string, instanceID int) string {
+	internalPrefix := fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID)
+	shortPrefix := fmt.Sprintf("/s/%s", strings.Trim(strings.TrimSpace(code), "/"))
+	path := strings.TrimSpace(requestPath)
+	if path == "" || path == shortPrefix || path == shortPrefix+"/" {
+		return internalPrefix + "/"
+	}
+	if strings.HasPrefix(path, shortPrefix+"/") {
+		return internalPrefix + strings.TrimPrefix(path, shortPrefix)
+	}
+	return internalPrefix + "/"
 }
 
 func sanitizeDownloadName(name string, fallback ...string) string {

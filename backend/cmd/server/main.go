@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +15,7 @@ import (
 	"clawreef/internal/db"
 	"clawreef/internal/handlers"
 	"clawreef/internal/middleware"
+	"clawreef/internal/models"
 	"clawreef/internal/repository"
 	"clawreef/internal/services"
 	"clawreef/internal/services/k8s"
@@ -50,7 +51,7 @@ func main() {
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(database)
 	quotaRepo := repository.NewQuotaRepository(database)
-	instanceRepo := repository.NewInstanceRepository(database, cfg.Database)
+	instanceRepo := repository.NewInstanceRepository(database)
 	systemImageSettingRepo := repository.NewSystemImageSettingRepository(database)
 	llmModelRepo := repository.NewLLMModelRepository(database)
 	modelInvocationRepo := repository.NewModelInvocationRepository(database)
@@ -66,12 +67,14 @@ func main() {
 	instanceDesiredStateRepo := repository.NewInstanceDesiredStateRepository(database)
 	instanceCommandRepo := repository.NewInstanceCommandRepository(database)
 	instanceConfigRevisionRepo := repository.NewInstanceConfigRevisionRepository(database)
+	runtimePodRepo := repository.NewRuntimePodRepository(database)
+	bindingRepo := repository.NewInstanceRuntimeBindingRepository(database)
+	rolloutRepo := repository.NewRuntimeRolloutRepository(database)
+	workspaceFileAuditRepo := repository.NewWorkspaceFileAuditRepository(database)
+	teamRepo := repository.NewTeamRepository(database)
 	skillRepo := repository.NewSkillRepository(database)
-	variantTemplateRepo := repository.NewAgentVariantTemplateRepository(database)
-	variantTemplateVersionRepo := repository.NewAgentVariantTemplateVersionRepository(database)
-	channelRepo := repository.NewChannelRepository(database)
-	billingRepo := repository.NewBillingRepository(database)
 	securityScanRepo := repository.NewSecurityScanRepository(database)
+	instanceExternalAccessRepo := repository.NewInstanceExternalAccessRepository(database)
 
 	if repaired, repairErr := services.RepairSeededAdminPassword(userRepo); repairErr != nil {
 		log.Printf("Warning: failed to repair seeded admin password: %v", repairErr)
@@ -93,7 +96,7 @@ func main() {
 	riskDetectionService := services.NewRiskDetectionService(riskRuleRepo)
 	riskHitService := services.NewRiskHitService(riskHitRepo)
 	riskRuleService := services.NewRiskRuleService(riskRuleRepo)
-	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo)
+	openClawConfigService := services.NewOpenClawConfigService(openClawConfigRepo, skillRepo)
 	objectStorageService, err := services.NewObjectStorageService(cfg.ObjectStorage)
 	if err != nil {
 		log.Fatalf("Failed to initialize object storage: %v", err)
@@ -102,22 +105,53 @@ func main() {
 	aiObservabilityService := services.NewAIObservabilityService(modelInvocationRepo, auditEventRepo, costRecordRepo, riskHitRepo, chatMessageRepo, llmModelRepo, instanceRepo, userRepo)
 	clusterResourceService := services.NewClusterResourceService(instanceRepo)
 	services.SetRuntimeImageSettingsProvider(systemImageSettingService)
-	instanceService := services.NewInstanceService(instanceRepo, quotaRepo, llmModelRepo, openClawConfigService, variantTemplateRepo)
+	services.SetOpenClawTransferRuntimeRepositories(instanceRepo, bindingRepo, runtimePodRepo)
+	runtimeAgentClient := services.NewRuntimeAgentClient(cfg.Runtime.AgentControlToken)
+	instanceService := services.NewInstanceService(
+		instanceRepo,
+		quotaRepo,
+		llmModelRepo,
+		openClawConfigService,
+		services.WithPrivilegedInstancePods(cfg.Kubernetes.Runtime.Pod.Privileged),
+		services.WithV2RuntimeLifecycle(runtimePodRepo, bindingRepo, runtimeAgentClient, cfg.Runtime.WorkspaceRoot),
+	)
 	instanceAgentService := services.NewInstanceAgentService(instanceRepo, instanceAgentRepo, instanceDesiredStateRepo, instanceRuntimeStatusRepo, instanceCommandRepo)
 	instanceRuntimeStatusService := services.NewInstanceRuntimeStatusService(instanceRuntimeStatusRepo, instanceAgentRepo, instanceDesiredStateRepo)
 	instanceCommandService := services.NewInstanceCommandService(instanceCommandRepo, instanceRuntimeStatusRepo, instanceDesiredStateRepo)
 	instanceConfigRevisionService := services.NewInstanceConfigRevisionService(instanceConfigRevisionRepo)
+	teamService := services.NewTeamService(teamRepo, instanceService, services.WithTeamRuntimeWorkspaceRoot(cfg.Runtime.WorkspaceRoot))
+	var platformRedis services.PlatformRedisClient
+	if redisURL := strings.TrimSpace(cfg.Runtime.RedisURL); redisURL != "" {
+		var redisErr error
+		platformRedis, redisErr = services.NewPlatformRedisClient(redisURL)
+		if redisErr != nil {
+			log.Printf("platform redis disabled: %v", redisErr)
+		}
+	} else {
+		log.Printf("platform redis disabled: redis url is empty")
+	}
+	runtimeEvents := services.NewRuntimeEventService(platformRedis)
+	workspaceFileService := services.NewWorkspaceFileService(workspaceFileAuditRepo)
+	runtimeWorkspaceFileService := services.NewRuntimeWorkspaceFileService(workspaceFileAuditRepo)
 	skillService := services.NewSkillService(skillRepo, instanceRepo, instanceCommandService, objectStorageService, skillScannerClient)
 	securityScanService := services.NewSecurityScanService(securityScanRepo, skillRepo, objectStorageService, skillScannerClient)
-	channelService := services.NewChannelService(channelRepo, instanceCommandService)
-	billingService := services.NewBillingService(billingRepo, costRecordRepo)
-	variantTemplateService := services.NewAgentVariantTemplateService(variantTemplateRepo, variantTemplateVersionRepo)
+	externalAccessService := services.NewInstanceExternalAccessService(instanceExternalAccessRepo)
 	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
 	userHandler := handlers.NewUserHandler(userService, quotaService)
-	instanceHandler := handlers.NewInstanceHandler(instanceService, instanceAgentService, instanceRuntimeStatusService, instanceCommandService, instanceConfigRevisionService, openClawConfigService, skillService, variantTemplateService)
+	instanceHandler := handlers.NewInstanceHandler(
+		instanceService,
+		instanceAgentService,
+		instanceRuntimeStatusService,
+		instanceCommandService,
+		instanceConfigRevisionService,
+		openClawConfigService,
+		skillService,
+		externalAccessService,
+		services.WithInstanceProxyRuntimeRepositories(instanceRepo, runtimePodRepo, bindingRepo),
+	)
 	systemSettingsHandler := handlers.NewSystemSettingsHandler(systemImageSettingService)
 	llmModelHandler := handlers.NewLLMModelHandler(llmModelService)
 	aiGatewayHandler := handlers.NewAIGatewayHandler(aiGatewayService)
@@ -128,26 +162,67 @@ func main() {
 	openClawConfigHandler := handlers.NewOpenClawConfigHandler(openClawConfigService)
 	skillHandler := handlers.NewSkillHandler(skillService, instanceService)
 	securityHandler := handlers.NewSecurityHandler(securityScanService)
-	channelHandler := handlers.NewChannelHandler(channelService)
-	billingHandler := handlers.NewBillingHandler(billingService)
 	agentHandler := handlers.NewAgentHandler(instanceAgentService, instanceCommandService, instanceRuntimeStatusService, instanceConfigRevisionService, skillService, systemImageSettingService)
-	variantTemplateHandler := handlers.NewVariantTemplateHandler(variantTemplateService)
-
-	instanceCommandService.SetOnCommandFinished(func(commandID int, commandType string, result map[string]interface{}) {
-		if commandType == services.InstanceCommandTypeProcessChannelMessage {
-			if err := channelService.HandleCommandFinished(commandID); err != nil {
-				fmt.Printf("Error handling channel command finish: %v\n", err)
-			}
-		}
-	})
+	teamHandler := handlers.NewTeamHandler(teamService)
+	workspaceFileHandler := handlers.NewWorkspaceFileHandler(instanceService, workspaceFileService, runtimeWorkspaceFileService)
+	runtimeAgentHandler := handlers.NewRuntimeAgentHandler(cfg.Runtime, runtimePodRepo, bindingRepo, runtimeEvents)
 
 	// Initialize WebSocket hub and handler
 	wsHub := services.GetHub()
 	wsHandler := handlers.NewWebSocketHandler(wsHub)
+	var runtimeAdminEventBridgeCancel context.CancelFunc
+	if platformRedis != nil {
+		var bridgeCtx context.Context
+		bridgeCtx, runtimeAdminEventBridgeCancel = context.WithCancel(context.Background())
+		services.StartRuntimeAdminEventBridge(bridgeCtx, runtimeEvents, wsHub)
+	}
 
 	// Start sync service to keep instance status in sync with K8s
 	syncService := services.NewSyncService(instanceRepo, instanceRuntimeStatusService)
 	syncService.Start()
+	teamService.Start()
+	var runtimeSchedulerCancel context.CancelFunc
+	var runtimeScheduler *services.RuntimeScheduler
+	if cfg.Runtime.SchedulerEnabled {
+		k8sClient := k8s.GetClient()
+		if k8sClient == nil || k8sClient.Clientset == nil {
+			log.Printf("runtime scheduler disabled: k8s client is unavailable")
+		} else {
+			leader := services.NewRuntimeLeaderService(k8sClient.Clientset, cfg.Runtime.Namespace, cfg.Runtime.BackendReplicaID)
+			runtimeDeployments := k8s.NewRuntimeDeploymentService(k8sClient.Clientset)
+			runtimeSchedulerOptions := []services.RuntimeSchedulerOption{
+				services.WithRuntimeSchedulerWorkspaceRoot(cfg.Runtime.WorkspaceRoot),
+				services.WithRuntimeSchedulerNamespace(cfg.Runtime.Namespace),
+				services.WithRuntimeSchedulerGatewayPortRange(cfg.Runtime.GatewayPortStart, cfg.Runtime.GatewayPortEnd),
+				services.WithRuntimeSchedulerHeartbeatTimeout(cfg.Runtime.HeartbeatTimeout),
+				services.WithRuntimeSchedulerMaxGatewaysPerPod(cfg.Runtime.MaxGatewaysPerPod),
+			}
+			if gatewayEnvProvider, ok := instanceService.(interface {
+				BuildGatewayEnv(*models.Instance) (map[string]string, error)
+			}); ok {
+				runtimeSchedulerOptions = append(runtimeSchedulerOptions, services.WithRuntimeSchedulerGatewayEnvBuilder(gatewayEnvProvider.BuildGatewayEnv))
+			}
+			runtimeScheduler = services.NewRuntimeScheduler(
+				instanceRepo,
+				runtimePodRepo,
+				bindingRepo,
+				rolloutRepo,
+				runtimeAgentClient,
+				runtimeEvents,
+				leader,
+				runtimeDeployments,
+				cfg.Runtime.SchedulerTick,
+				runtimeSchedulerOptions...,
+			)
+			var schedulerCtx context.Context
+			schedulerCtx, runtimeSchedulerCancel = context.WithCancel(context.Background())
+			runtimeScheduler.Start(schedulerCtx)
+			log.Printf("runtime scheduler started")
+		}
+	} else {
+		log.Printf("runtime scheduler disabled by configuration")
+	}
+	runtimePoolHandler := handlers.NewRuntimePoolHandler(runtimePodRepo, bindingRepo, rolloutRepo, runtimeScheduler, runtimeEvents)
 
 	// Setup router
 	r := gin.Default()
@@ -159,8 +234,20 @@ func main() {
 	r.NoMethod(egressProxyHandler.Handle)
 
 	// Routes
+	r.Any("/s/:code", instanceHandler.OpenShortExternalAccess)
+	r.Any("/s/:code/*path", instanceHandler.OpenShortExternalAccess)
+
 	api := r.Group("/api/v1")
 	{
+		runtimeAgent := api.Group("/runtime-agent")
+		{
+			runtimeAgent.POST("/register", runtimeAgentHandler.Register)
+			runtimeAgent.POST("/heartbeat", runtimeAgentHandler.Heartbeat)
+			runtimeAgent.POST("/metrics/report", runtimeAgentHandler.ReportMetrics)
+			runtimeAgent.POST("/gateways/report", runtimeAgentHandler.ReportGateways)
+			runtimeAgent.POST("/skills/report", runtimeAgentHandler.ReportSkills)
+		}
+
 		// Auth routes
 		auth := api.Group("/auth")
 		{
@@ -215,17 +302,26 @@ func main() {
 			instances.POST("/:id/config/revisions/publish", instanceHandler.PublishConfigRevision)
 			instances.POST("/:id/access", instanceHandler.GenerateAccessToken)
 			instances.GET("/:id/access", instanceHandler.AccessInstance)
+			instances.GET("/:id/shell", instanceHandler.StreamShell)
 			instances.POST("/:id/sync", instanceHandler.ForceSync)
 			instances.GET("/:id/openclaw/export", instanceHandler.ExportOpenClaw)
 			instances.POST("/:id/openclaw/import", instanceHandler.ImportOpenClaw)
 			instances.GET("/:id/hermes/export", instanceHandler.ExportHermes)
 			instances.POST("/:id/hermes/import", instanceHandler.ImportHermes)
+			instances.GET("/:id/external-access", instanceHandler.GetExternalAccess)
+			instances.POST("/:id/external-access/share-link", instanceHandler.EnableShareLink)
+			instances.POST("/:id/external-access/password", instanceHandler.CreateExternalAccessPassword)
+			instances.DELETE("/:id/external-access", instanceHandler.DisableExternalAccess)
+			instances.GET("/:id/workspace/files", workspaceFileHandler.List)
+			instances.GET("/:id/workspace/preview", workspaceFileHandler.Preview)
+			instances.GET("/:id/workspace/download", workspaceFileHandler.Download)
+			instances.POST("/:id/workspace/upload", workspaceFileHandler.Upload)
+			instances.POST("/:id/workspace/folders", workspaceFileHandler.Mkdir)
+			instances.PATCH("/:id/workspace/entries", workspaceFileHandler.Rename)
+			instances.DELETE("/:id/workspace/entries", workspaceFileHandler.Delete)
 			instances.GET("/:id/skills", skillHandler.ListInstanceSkills)
 			instances.POST("/:id/skills", skillHandler.AttachSkillToInstance)
 			instances.DELETE("/:id/skills/:skillId", skillHandler.RemoveSkillFromInstance)
-			instances.GET("/:id/upgrade-check", instanceHandler.UpgradeCheck)
-			instances.POST("/:id/upgrade", instanceHandler.UpgradeInstance)
-			instances.POST("/:id/devices/approve", instanceHandler.ApproveDevicePairing)
 		}
 
 		// Admin console: cross-user instance listing. Gated by admin
@@ -238,6 +334,31 @@ func main() {
 		adminInstances.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminInstances.GET("", instanceHandler.ListAllInstances)
+		}
+
+		adminRuntime := api.Group("/admin")
+		adminRuntime.Use(middleware.Auth())
+		adminRuntime.Use(middleware.SetUserInfo(userRepo))
+		adminRuntime.Use(middleware.NewAdminAuth(userRepo))
+		{
+			adminRuntime.GET("/runtime-pods", runtimePoolHandler.ListPods)
+			adminRuntime.GET("/runtime-pods/:id/gateways", runtimePoolHandler.GetPodGateways)
+			adminRuntime.POST("/runtime-pods/:id/drain", runtimePoolHandler.DrainPod)
+			adminRuntime.POST("/runtime-rollouts", runtimePoolHandler.StartRollout)
+		}
+
+		teams := api.Group("/teams")
+		teams.Use(middleware.Auth())
+		teams.Use(middleware.SetUserInfo(userRepo))
+		{
+			teams.GET("", teamHandler.ListTeams)
+			teams.POST("", teamHandler.CreateTeam)
+			teams.GET("/:id", teamHandler.GetTeam)
+			teams.DELETE("/:id", teamHandler.DeleteTeam)
+			teams.GET("/:id/tasks", teamHandler.ListTasks)
+			teams.POST("/:id/tasks", teamHandler.DispatchTask)
+			teams.GET("/:id/events", teamHandler.ListEvents)
+			teams.DELETE("/:id/members/:memberID", teamHandler.DeleteMember)
 		}
 
 		openClawConfigs := api.Group("/openclaw-configs")
@@ -295,33 +416,6 @@ func main() {
 			adminSystemSettings.GET("/cluster-resources", clusterResourceHandler.GetOverview)
 		}
 
-		billing := api.Group("/billing")
-		billing.Use(middleware.Auth())
-		{
-			billing.GET("/plans", billingHandler.ListPlans)
-			billing.GET("/plans/:id", billingHandler.GetPlan)
-			billing.GET("/subscription", billingHandler.GetSubscription)
-			billing.POST("/subscribe", billingHandler.CreateSubscription)
-			billing.DELETE("/subscribe", billingHandler.CancelSubscription)
-			billing.GET("/invoices", billingHandler.ListInvoices)
-			billing.GET("/usage", billingHandler.GetUsageSummary)
-		}
-
-		// Channel routes (authenticated)
-		channels := api.Group("/channels")
-		channels.Use(middleware.Auth())
-		channels.Use(middleware.SetUserInfo(userRepo))
-		{
-			channels.POST("", channelHandler.CreateChannel)
-			channels.GET("", channelHandler.ListChannels)
-			channels.GET("/:id", channelHandler.GetChannel)
-			channels.PUT("/:id", channelHandler.UpdateChannel)
-			channels.DELETE("/:id", channelHandler.DeleteChannel)
-		}
-
-		// Webhook routes (public, no auth)
-		api.POST("/webhooks/:type/:id", channelHandler.WebhookHandler)
-
 		adminModels := api.Group("/admin/models")
 		adminModels.Use(middleware.Auth())
 		adminModels.Use(middleware.SetUserInfo(userRepo))
@@ -329,7 +423,6 @@ func main() {
 		{
 			adminModels.GET("", llmModelHandler.ListModels)
 			adminModels.POST("/discover", llmModelHandler.DiscoverModels)
-			adminModels.POST("/:id/test", llmModelHandler.TestModel)
 			adminModels.PUT("", llmModelHandler.UpsertModel)
 			adminModels.DELETE("/:id", llmModelHandler.DeleteModel)
 		}
@@ -349,17 +442,9 @@ func main() {
 		adminCosts.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminCosts.GET("", aiObservabilityHandler.GetCostOverview)
-
-
 		}
 
 		adminRiskRules := api.Group("/admin/risk-rules")
-	// Agent templates for marketplace (public)
-	api.GET("/agents", agentHandler.ListAgentTemplates)
-	api.GET("/agent-variants", variantTemplateHandler.ListPublic)
-	api.GET("/agent-variants/:slug", variantTemplateHandler.GetBySlug)
-	api.GET("/skills/public", skillHandler.ListPublicSkills)
-
 		adminRiskRules.Use(middleware.Auth())
 		adminRiskRules.Use(middleware.SetUserInfo(userRepo))
 		adminRiskRules.Use(middleware.NewAdminAuth(userRepo))
@@ -377,35 +462,6 @@ func main() {
 		adminSkills.Use(middleware.NewAdminAuth(userRepo))
 		{
 			adminSkills.GET("", skillHandler.ListAllSkills)
-			adminSkills.GET("/:id/download", skillHandler.AdminDownloadSkill)
-		}
-
-		adminVariants := api.Group("/admin/agent-variants")
-		adminVariants.Use(middleware.Auth())
-		adminVariants.Use(middleware.SetUserInfo(userRepo))
-		adminVariants.Use(middleware.NewAdminAuth(userRepo))
-		{
-			adminVariants.GET("", variantTemplateHandler.ListAll)
-			adminVariants.GET("/stats", variantTemplateHandler.GetStats)
-			adminVariants.GET("/:id", variantTemplateHandler.GetByID)
-			adminVariants.POST("", variantTemplateHandler.Create)
-			adminVariants.PUT("/:id", variantTemplateHandler.Update)
-			adminVariants.DELETE("/:id", variantTemplateHandler.Delete)
-			adminVariants.PUT("/:id/publish", variantTemplateHandler.Publish)
-			adminVariants.PUT("/:id/deprecate", variantTemplateHandler.Deprecate)
-			adminVariants.PUT("/:id/archive", variantTemplateHandler.Archive)
-			adminVariants.GET("/:id/versions", variantTemplateHandler.ListVersions)
-			adminVariants.GET("/:id/versions/:version", variantTemplateHandler.GetVersion)
-			adminVariants.POST("/:id/fork", variantTemplateHandler.Fork)
-			adminVariants.GET("/review", variantTemplateHandler.ListByReviewStatus)
-			adminVariants.PUT("/:id/submit-review", variantTemplateHandler.SubmitForReview)
-			adminVariants.PUT("/:id/approve", variantTemplateHandler.Approve)
-			adminVariants.PUT("/:id/reject", variantTemplateHandler.Reject)
-			adminVariants.GET("/:id/diff", variantTemplateHandler.DiffVersions)
-			adminVariants.POST("/:id/rollback", variantTemplateHandler.RestoreVersion)
-			adminVariants.POST("/batch/publish", variantTemplateHandler.BulkPublish)
-			adminVariants.POST("/batch/deprecate", variantTemplateHandler.BulkDeprecate)
-			adminVariants.POST("/batch/archive", variantTemplateHandler.BulkArchive)
 		}
 
 		adminSecurity := api.Group("/admin/security")
@@ -422,7 +478,7 @@ func main() {
 		}
 
 		gatewayLLM := api.Group("/gateway/llm")
-		gatewayLLM.Use(middleware.GatewayAuth(instanceRepo))
+		gatewayLLM.Use(middleware.GatewayAuth(instanceRepo, bindingRepo))
 		{
 			gatewayLLM.GET("/models", aiGatewayHandler.ListModels)
 			gatewayLLM.POST("/chat/completions", aiGatewayHandler.ChatCompletions)
@@ -485,7 +541,14 @@ func main() {
 	}
 
 	// Stop background services
+	if runtimeSchedulerCancel != nil {
+		runtimeSchedulerCancel()
+	}
+	if runtimeAdminEventBridgeCancel != nil {
+		runtimeAdminEventBridgeCancel()
+	}
 	syncService.Stop()
+	teamService.Stop()
 	wsHub.Stop()
 	instanceHandler.Shutdown()
 

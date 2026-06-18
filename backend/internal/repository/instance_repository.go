@@ -3,15 +3,16 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"clawreef/internal/config"
 	"clawreef/internal/models"
 	"github.com/upper/db/v4"
-	_ "github.com/go-sql-driver/mysql"
 )
+
+var ErrStaleRuntimeGeneration = errors.New("stale runtime generation")
 
 // InstanceRepository defines the interface for instance data operations
 type InstanceRepository interface {
@@ -23,143 +24,51 @@ type InstanceRepository interface {
 	CountAll() (int, error)
 	GetByUserID(userID int, offset, limit int) ([]models.Instance, error)
 	CountByUserID(userID int) (int, error)
+	CountActiveByMode(ctx context.Context, mode string) (int, error)
 	ExistsByUserIDAndName(userID int, name string) (bool, error)
 	GetAllRunning() ([]models.Instance, error)
+	GetV2DesiredRunning(ctx context.Context, limit int) ([]models.Instance, error)
+	GetV2Creating(ctx context.Context, limit int) ([]models.Instance, error)
+	UpdateRuntimeState(ctx context.Context, id int, status string, generation int, message *string) error
+	SetWorkspacePath(ctx context.Context, id int, workspacePath string) error
+	UpdateWorkspaceUsage(ctx context.Context, id int, usageBytes int64) error
 	Update(instance *models.Instance) error
 	Delete(id int) error
 }
 
 // instanceRepository implements InstanceRepository
 type instanceRepository struct {
-	sess   db.Session
-	dbConf config.DatabaseConfig
-	db     *sql.DB
+	sess db.Session
 }
 
 // NewInstanceRepository creates a new instance repository
-func NewInstanceRepository(sess db.Session, dbConf config.DatabaseConfig) InstanceRepository {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		dbConf.User, dbConf.Password, dbConf.Host, dbConf.Port, dbConf.Database)
-	
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		fmt.Printf("[WARN] Failed to open MySQL connection: %v\n", err)
-		return &instanceRepository{sess: sess, dbConf: dbConf, db: nil}
-	}
-	
-	if err := db.Ping(); err != nil {
-		fmt.Printf("[WARN] Failed to ping MySQL: %v\n", err)
-		return &instanceRepository{sess: sess, dbConf: dbConf, db: nil}
-	}
-	
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	fmt.Printf("[INFO] Direct MySQL connection initialized: %s@%s:%d/%s\n", 
-		dbConf.User, dbConf.Host, dbConf.Port, dbConf.Database)
-	
-	return &instanceRepository{sess: sess, dbConf: dbConf, db: db}
+func NewInstanceRepository(sess db.Session) InstanceRepository {
+	return &instanceRepository{sess: sess}
 }
 
 // Create creates a new instance
 func (r *instanceRepository) Create(instance *models.Instance) error {
-	if r.db == nil {
-		return fmt.Errorf("database connection not initialized")
-	}
-
-	// Use a single connection for INSERT and LAST_INSERT_ID
-	conn, err := r.db.Conn(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to get connection: %w", err)
-	}
-	defer conn.Close()
-
-	result, err := conn.ExecContext(context.Background(),
-		`INSERT INTO instances (user_id, name, description, type, status, cpu_cores, memory_gb, disk_gb, 
-		gpu_enabled, gpu_type, gpu_count, os_type, os_version, image_registry, image_tag, 
-		environment_overrides_json, storage_class, mount_path, variant_id, variant_version, created_at, updated_at) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-		instance.UserID, instance.Name, instance.Description, instance.Type, "creating",
-		instance.CPUCores, instance.MemoryGB, instance.DiskGB, instance.GPUEnabled,
-		instance.GPUType, instance.GPUCount, instance.OSType, instance.OSVersion,
-		instance.ImageRegistry, instance.ImageTag, instance.EnvironmentOverridesJSON,
-		instance.StorageClass, instance.MountPath, instance.VariantID, instance.VariantVersion,
-	)
+	res, err := r.sess.Collection("instances").Insert(instance)
 	if err != nil {
 		return fmt.Errorf("failed to create instance: %w", err)
 	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return fmt.Errorf("failed to get last insert ID: %w", err)
+	// Get the generated ID
+	if id, ok := res.ID().(int64); ok {
+		instance.ID = int(id)
 	}
-
-	instance.ID = int(id)
-	instance.Status = "creating"
-
-	// Verify the instance was created using the same connection
-	var checkID int
-	err = conn.QueryRowContext(context.Background(), "SELECT id FROM instances WHERE id = ?", id).Scan(&checkID)
-	if err != nil {
-		return fmt.Errorf("instance %d not found after insert: %w", id, err)
-	}
-
 	return nil
 }
 
 // GetByID gets an instance by ID
 func (r *instanceRepository) GetByID(id int) (*models.Instance, error) {
-	if r.db == nil {
-		return nil, fmt.Errorf("database connection not initialized")
-	}
-
 	var instance models.Instance
-	var description, gpuType, imageRegistry, imageTag *string
-	var podName, podNamespace, podIP, accessUrl *string
-	var accessToken, agentBootstrapToken *string
-	var openclawConfigSnapshotID *int
-	var startedAt, stoppedAt *time.Time
-
-	err := r.db.QueryRow(`
-		SELECT id, user_id, name, description, type, status, cpu_cores, memory_gb, disk_gb,
-		       gpu_enabled, gpu_type, gpu_count, os_type, os_version,
-		       image_registry, image_tag,
-		       environment_overrides_json, storage_class, mount_path,
-		       pod_name, pod_namespace, pod_ip, access_url,
-		       access_token, agent_bootstrap_token, openclaw_config_snapshot_id,
-		       created_at, updated_at, started_at, stopped_at
-		FROM instances WHERE id = ?
-	`, id).Scan(
-		&instance.ID, &instance.UserID, &instance.Name, &description, &instance.Type, &instance.Status,
-		&instance.CPUCores, &instance.MemoryGB, &instance.DiskGB,
-		&instance.GPUEnabled, &gpuType, &instance.GPUCount, &instance.OSType, &instance.OSVersion,
-		&imageRegistry, &imageTag,
-		&instance.EnvironmentOverridesJSON, &instance.StorageClass, &instance.MountPath,
-		&podName, &podNamespace, &podIP, &accessUrl,
-		&accessToken, &agentBootstrapToken, &openclawConfigSnapshotID,
-		&instance.CreatedAt, &instance.UpdatedAt, &startedAt, &stoppedAt,
-	)
-
+	err := r.sess.Collection("instances").Find(db.Cond{"id": id}).One(&instance)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == db.ErrNoMoreRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get instance: %w", err)
 	}
-
-	instance.Description = description
-	instance.GPUType = gpuType
-	instance.ImageRegistry = imageRegistry
-	instance.ImageTag = imageTag
-	instance.PodName = podName
-	instance.PodNamespace = podNamespace
-	instance.PodIP = podIP
-	instance.AccessURL = accessUrl
-	instance.AccessToken = accessToken
-	instance.AgentBootstrapToken = agentBootstrapToken
-	instance.OpenClawConfigSnapshotID = openclawConfigSnapshotID
-	instance.StartedAt = startedAt
-	instance.StoppedAt = stoppedAt
-
 	return &instance, nil
 }
 
@@ -208,7 +117,7 @@ func (r *instanceRepository) CountAll() (int, error) {
 // GetByUserID gets instances by user ID with pagination
 func (r *instanceRepository) GetByUserID(userID int, offset, limit int) ([]models.Instance, error) {
 	var instances []models.Instance
-	err := r.sess.Collection("instances").Find(db.Cond{"user_id": userID}).Offset(offset).Limit(limit).All(&instances)
+	err := r.sess.Collection("instances").Find(db.Cond{"user_id": userID}).OrderBy("-created_at", "-id").Offset(offset).Limit(limit).All(&instances)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get instances: %w", err)
 	}
@@ -222,6 +131,27 @@ func (r *instanceRepository) CountByUserID(userID int) (int, error) {
 		return 0, fmt.Errorf("failed to count instances: %w", err)
 	}
 	return int(count), nil
+}
+
+func (r *instanceRepository) CountActiveByMode(ctx context.Context, mode string) (int, error) {
+	normalized := strings.TrimSpace(strings.ToLower(mode))
+	if normalized == "" {
+		return 0, nil
+	}
+	row, err := r.sess.SQL().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM instances
+		WHERE instance_mode = ?
+			AND status IN ('creating', 'running')
+	`, normalized)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count active instances by mode: %w", err)
+	}
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to scan active instances by mode count: %w", err)
+	}
+	return count, nil
 }
 
 // ExistsByUserIDAndName checks whether the user already has an instance with the same display name.
@@ -243,118 +173,168 @@ func (r *instanceRepository) ExistsByUserIDAndName(userID int, name string) (boo
 
 // GetAllRunning gets all instances that are not in stopped or error state (for sync)
 func (r *instanceRepository) GetAllRunning() ([]models.Instance, error) {
-	if r.db == nil {
-		return nil, fmt.Errorf("database connection not initialized")
-	}
-
-	rows, err := r.db.Query(`
-		SELECT id, user_id, name, description, type, status, cpu_cores, memory_gb, disk_gb,
-		       gpu_enabled, gpu_type, gpu_count, os_type, os_version,
-		       image_registry, image_tag,
-		       environment_overrides_json, storage_class, mount_path,
-		       pod_name, pod_namespace, pod_ip, access_url,
-		       access_token, agent_bootstrap_token, openclaw_config_snapshot_id,
-		       created_at, updated_at, started_at, stopped_at
-		FROM instances
-		WHERE status IN ('running', 'creating', 'stopped', 'error')
-		ORDER BY id
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query instances: %w", err)
-	}
-	defer rows.Close()
-
 	var instances []models.Instance
-	for rows.Next() {
-		var instance models.Instance
-		var description, gpuType, imageRegistry, imageTag *string
-		var podName, podNamespace, podIP, accessUrl *string
-		var accessToken, agentBootstrapToken *string
-		var openclawConfigSnapshotID *int
-		var startedAt, stoppedAt *time.Time
-
-		err := rows.Scan(
-			&instance.ID, &instance.UserID, &instance.Name, &description, &instance.Type, &instance.Status,
-			&instance.CPUCores, &instance.MemoryGB, &instance.DiskGB,
-			&instance.GPUEnabled, &gpuType, &instance.GPUCount, &instance.OSType, &instance.OSVersion,
-			&imageRegistry, &imageTag,
-			&instance.EnvironmentOverridesJSON, &instance.StorageClass, &instance.MountPath,
-			&podName, &podNamespace, &podIP, &accessUrl,
-			&accessToken, &agentBootstrapToken, &openclawConfigSnapshotID,
-			&instance.CreatedAt, &instance.UpdatedAt, &startedAt, &stoppedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan instance: %w", err)
-		}
-
-		instance.Description = description
-		instance.GPUType = gpuType
-		instance.ImageRegistry = imageRegistry
-		instance.ImageTag = imageTag
-		instance.PodName = podName
-		instance.PodNamespace = podNamespace
-		instance.PodIP = podIP
-		instance.AccessURL = accessUrl
-		instance.AccessToken = accessToken
-		instance.AgentBootstrapToken = agentBootstrapToken
-		instance.OpenClawConfigSnapshotID = openclawConfigSnapshotID
-		instance.StartedAt = startedAt
-		instance.StoppedAt = stoppedAt
-
-		instances = append(instances, instance)
+	err := r.sess.Collection("instances").Find(
+		db.Or(
+			db.Cond{"status": "running"},
+			db.Cond{"status": "creating"},
+			db.Cond{"status": "stopped"},
+			db.Cond{"status": "error"},
+		),
+	).All(&instances)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get running instances: %w", err)
 	}
-
 	return instances, nil
+}
+
+func (r *instanceRepository) GetV2DesiredRunning(ctx context.Context, limit int) ([]models.Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var instances []models.Instance
+	query, args := buildV2SchedulerInstanceQuery(v2DesiredRunningStatuses(), limit)
+	iter := r.sess.SQL().IteratorContext(ctx, query, args...)
+	defer iter.Close()
+	if err := iter.All(&instances); err != nil {
+		return nil, fmt.Errorf("failed to get v2 desired running instances: %w", err)
+	}
+	return instances, nil
+}
+
+func v2DesiredRunningStatuses() []string {
+	return []string{"creating", "running", "error"}
+}
+
+func (r *instanceRepository) GetV2Creating(ctx context.Context, limit int) ([]models.Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var instances []models.Instance
+	query, args := buildV2SchedulerInstanceQuery([]string{"creating"}, limit)
+	iter := r.sess.SQL().IteratorContext(ctx, query, args...)
+	defer iter.Close()
+	if err := iter.All(&instances); err != nil {
+		return nil, fmt.Errorf("failed to get v2 creating instances: %w", err)
+	}
+	return instances, nil
+}
+
+func buildV2SchedulerInstanceQuery(statuses []string, limit int) (string, []any) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if len(statuses) == 0 {
+		statuses = []string{"creating", "running"}
+	}
+	statusPlaceholders := strings.TrimRight(strings.Repeat("?, ", len(statuses)), ", ")
+	args := make([]any, 0, len(statuses)+5)
+	for _, status := range statuses {
+		args = append(args, status)
+	}
+	args = append(args, "gateway", "lite", "openclaw", "hermes", limit)
+	return fmt.Sprintf(`
+		SELECT *
+		FROM instances
+		WHERE status IN (%s)
+			AND runtime_type = ?
+			AND instance_mode = ?
+			AND workspace_path IS NOT NULL
+			AND TRIM(workspace_path) <> ''
+			AND type IN (?, ?)
+		ORDER BY id
+		LIMIT ?
+	`, statusPlaceholders), args
+}
+
+func (r *instanceRepository) UpdateRuntimeState(ctx context.Context, id int, status string, generation int, message *string) error {
+	res, err := r.sess.SQL().ExecContext(ctx, `
+		UPDATE instances
+		SET status = ?, runtime_generation = ?, runtime_error_message = ?, updated_at = ?
+		WHERE id = ? AND runtime_generation <= ?
+	`, status, generation, message, time.Now().UTC(), id, generation)
+	if err != nil {
+		return fmt.Errorf("failed to update instance runtime state: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to inspect instance runtime state update: %w", err)
+	}
+	if affected == 0 {
+		currentGeneration, err := r.getRuntimeGeneration(ctx, id)
+		if err != nil {
+			return err
+		}
+		if currentGeneration > generation {
+			return ErrStaleRuntimeGeneration
+		}
+	}
+	return nil
+}
+
+func (r *instanceRepository) getRuntimeGeneration(ctx context.Context, id int) (int, error) {
+	var currentGeneration int
+	row, err := r.sess.SQL().QueryRowContext(ctx, `
+		SELECT runtime_generation
+		FROM instances
+		WHERE id = ?
+	`, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query instance runtime generation: %w", err)
+	}
+	if err := row.Scan(&currentGeneration); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrStaleRuntimeGeneration
+		}
+		return 0, fmt.Errorf("failed to scan instance runtime generation: %w", err)
+	}
+	return currentGeneration, nil
+}
+
+func (r *instanceRepository) SetWorkspacePath(ctx context.Context, id int, workspacePath string) error {
+	_, err := r.sess.SQL().ExecContext(ctx, `
+		UPDATE instances
+		SET workspace_path = ?, updated_at = ?
+		WHERE id = ?
+	`, workspacePath, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("failed to set instance workspace path: %w", err)
+	}
+	return nil
+}
+
+func (r *instanceRepository) UpdateWorkspaceUsage(ctx context.Context, id int, usageBytes int64) error {
+	_, err := r.sess.SQL().ExecContext(ctx, `
+		UPDATE instances
+		SET workspace_usage_bytes = ?, updated_at = ?
+		WHERE id = ?
+	`, usageBytes, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update instance workspace usage: %w", err)
+	}
+	return nil
 }
 
 // Update updates an instance
 func (r *instanceRepository) Update(instance *models.Instance) error {
-	if r.db == nil {
-		return fmt.Errorf("database connection not initialized")
-	}
-
-	result, err := r.db.Exec(
-		`UPDATE instances SET 
-			status = ?, 
-			pod_name = ?, 
-			pod_namespace = ?, 
-			pod_ip = ?, 
-			access_token = ?,
-			agent_bootstrap_token = ?,
-			openclaw_config_snapshot_id = ?,
-			updated_at = NOW() 
-		WHERE id = ?`,
-		instance.Status,
-		instance.PodName,
-		instance.PodNamespace,
-		instance.PodIP,
-		instance.AccessToken,
-		instance.AgentBootstrapToken,
-		instance.OpenClawConfigSnapshotID,
-		instance.ID,
-	)
+	err := r.sess.Collection("instances").Find(db.Cond{"id": instance.ID}).Update(instance)
 	if err != nil {
 		return fmt.Errorf("failed to update instance: %w", err)
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return fmt.Errorf("instance %d not found", instance.ID)
 	}
 	return nil
 }
 
 // Delete deletes an instance
 func (r *instanceRepository) Delete(id int) error {
-	if r.db == nil {
-		return fmt.Errorf("database connection not initialized")
-	}
-	result, err := r.db.Exec("DELETE FROM instances WHERE id = ?", id)
+	err := r.sess.Collection("instances").Find(db.Cond{"id": id}).Delete()
 	if err != nil {
 		return fmt.Errorf("failed to delete instance: %w", err)
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return fmt.Errorf("instance %d not found", id)
 	}
 	return nil
 }

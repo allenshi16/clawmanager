@@ -302,9 +302,7 @@ export function useInstanceDesktopAccess({
       return;
     }
 
-    if (!embedUrlRef.current) {
-      void refreshAccess({ forceReload: true });
-    }
+    void refreshAccess({ forceReload: true });
 
     return () => {
       clearRetryTimeout();

@@ -11,6 +11,8 @@ type Instance struct {
 	Name                     string     `db:"name" json:"name"`
 	Description              *string    `db:"description" json:"description,omitempty"`
 	Type                     string     `db:"type" json:"type"`
+	RuntimeType              string     `db:"runtime_type" json:"runtime_type"`
+	InstanceMode             string     `db:"instance_mode" json:"instance_mode"`
 	Status                   string     `db:"status" json:"status"`
 	CPUCores                 float64    `db:"cpu_cores" json:"cpu_cores"`
 	MemoryGB                 int        `db:"memory_gb" json:"memory_gb"`
@@ -25,6 +27,10 @@ type Instance struct {
 	EnvironmentOverridesJSON *string    `db:"environment_overrides_json" json:"-"`
 	StorageClass             string     `db:"storage_class" json:"storage_class"`
 	MountPath                string     `db:"mount_path" json:"mount_path"`
+	WorkspacePath            *string    `db:"workspace_path" json:"workspace_path,omitempty"`
+	WorkspaceUsageBytes      int64      `db:"workspace_usage_bytes" json:"workspace_usage_bytes"`
+	RuntimeGeneration        int        `db:"runtime_generation" json:"runtime_generation"`
+	RuntimeErrorMessage      *string    `db:"runtime_error_message" json:"runtime_error_message,omitempty"`
 	PodName                  *string    `db:"pod_name" json:"pod_name,omitempty"`
 	PodNamespace             *string    `db:"pod_namespace" json:"pod_namespace,omitempty"`
 	PodIP                    *string    `db:"pod_ip" json:"pod_ip,omitempty"`
@@ -32,8 +38,6 @@ type Instance struct {
 	AccessToken              *string    `db:"access_token" json:"-"`
 	AgentBootstrapToken      *string    `db:"agent_bootstrap_token" json:"-"`
 	OpenClawConfigSnapshotID *int       `db:"openclaw_config_snapshot_id" json:"openclaw_config_snapshot_id,omitempty"`
-	VariantID                *int       `db:"variant_id" json:"variant_id,omitempty"`
-	VariantVersion           *int       `db:"variant_version" json:"variant_version,omitempty"`
 	CreatedAt                time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt                time.Time  `db:"updated_at" json:"updated_at"`
 	StartedAt                *time.Time `db:"started_at" json:"started_at,omitempty"`
