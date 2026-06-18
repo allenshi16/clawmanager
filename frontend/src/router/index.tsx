@@ -26,6 +26,14 @@ import SystemSettingsPage from '../pages/admin/SystemSettingsPage';
 import RuntimePodsPage from '../pages/admin/RuntimePodsPage';
 import UserSettingsPage from '../pages/settings/UserSettingsPage';
 import OpenClawConfigCenterPage from '../pages/openclaw/OpenClawConfigCenterPage';
+import LandingPage from '../pages/landing/LandingPage';
+import AgentMarketplacePage from '../pages/marketplace/AgentMarketplacePage';
+import AgentDetailPage from '../pages/marketplace/AgentDetailPage';
+import QuickCreatePage from '../pages/marketplace/QuickCreatePage';
+import ForkPage from '../pages/marketplace/ForkPage';
+import InstanceChatPage from '../pages/instances/InstanceChatPage';
+import ChannelsPage from '../pages/settings/ChannelsPage';
+import BillingPage from '../pages/billing/BillingPage';
 
 // Instance Pages
 import InstanceListPage from '../pages/instances/InstanceListPage';
@@ -104,29 +112,11 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
 };
 
-// Dashboard Redirect Component
-const DashboardRedirect: React.FC = () => {
-  const { user, isLoading } = useAuth();
-  const { t } = useI18n();
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-lg">{t('common.loading')}</div>
-      </div>
-    );
-  }
-
-  if (user?.role === 'admin') {
-    return <Navigate to="/admin" replace />;
-  }
-  return <Navigate to="/dashboard" replace />;
-};
-
 function AppRoutes() {
   return (
     <Routes>
       {/* Public Routes */}
+      <Route path="/" element={<LandingPage />} />
       <Route
         path="/login"
         element={
@@ -180,6 +170,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/instances/:id/chat"
+        element={
+          <ProtectedRoute>
+            <InstanceChatPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/portal"
         element={
           <ProtectedRoute>
@@ -224,6 +222,54 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <UserSettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings/channels"
+        element={
+          <ProtectedRoute>
+            <ChannelsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/billing"
+        element={
+          <ProtectedRoute>
+            <BillingPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace"
+        element={
+          <ProtectedRoute>
+            <AgentMarketplacePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug"
+        element={
+          <ProtectedRoute>
+            <AgentDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug/quick-create"
+        element={
+          <ProtectedRoute>
+            <QuickCreatePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace/:slug/fork"
+        element={
+          <ProtectedRoute>
+            <ForkPage />
           </ProtectedRoute>
         }
       />
@@ -342,8 +388,6 @@ function AppRoutes() {
         }
       />
 
-      {/* Default Redirect */}
-      <Route path="/" element={<DashboardRedirect />} />
     </Routes>
   );
 }
