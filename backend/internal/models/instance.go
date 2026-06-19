@@ -13,6 +13,8 @@ type Instance struct {
 	Type                     string     `db:"type" json:"type"`
 	RuntimeType              string     `db:"runtime_type" json:"runtime_type"`
 	InstanceMode             string     `db:"instance_mode" json:"instance_mode"`
+	VariantID                *int       `db:"variant_id" json:"variant_id,omitempty"`
+	VariantVersion           *int       `db:"variant_version" json:"variant_version,omitempty"`
 	Status                   string     `db:"status" json:"status"`
 	CPUCores                 float64    `db:"cpu_cores" json:"cpu_cores"`
 	MemoryGB                 int        `db:"memory_gb" json:"memory_gb"`

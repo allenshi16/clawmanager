@@ -6,11 +6,8 @@ import React, {
   useState,
 } from "react";
 import { OpenClawDesktopOverlay } from "../../components/OpenClawDesktopOverlay";
-import { InstanceShellTerminal } from "../../components/InstanceShellTerminal";
 import UserLayout from "../../components/UserLayout";
-import { WorkspaceFileManager } from "../../components/WorkspaceFileManager";
 import { useInstanceDesktopAccess } from "../../hooks/useInstanceDesktopAccess";
-import { prepareOpenClawControlUIStorage } from "../../lib/openclawControlStorage";
 import { instanceService } from "../../services/instanceService";
 import type { Instance, InstanceRuntimeDetails } from "../../types/instance";
 import { useI18n } from "../../contexts/I18nContext";
@@ -18,62 +15,6 @@ import { useI18n } from "../../contexts/I18nContext";
 const PORTAL_RUNTIME_POLL_INTERVAL_MS = 10000;
 const PORTAL_RUNTIME_BURST_POLL_INTERVAL_MS = 2500;
 const PORTAL_RUNTIME_BURST_WINDOW_MS = 12000;
-
-interface PreparedPortalFrame {
-  instanceId: number;
-  embedUrl: string;
-  src: string;
-}
-
-function supportsWorkspace(instance: Instance) {
-  return (
-    instance.type === "openclaw" ||
-    instance.type === "hermes" ||
-    Boolean(instance.workspace_path)
-  );
-}
-
-function typeLabel(type: Instance["type"]) {
-  return type === "hermes" ? "Hermes" : type === "openclaw" ? "OpenClaw" : type;
-}
-
-function modeLabel(mode: Instance["instance_mode"]) {
-  return mode === "pro" ? "Pro" : "Lite";
-}
-
-function modeClass(mode: Instance["instance_mode"]) {
-  return mode === "pro"
-    ? "border-indigo-200 bg-indigo-50 text-indigo-700"
-    : "border-sky-200 bg-sky-50 text-sky-700";
-}
-
-function instanceIdFromProxyUrl(url: string) {
-  try {
-    const parsed = new URL(url, window.location.href);
-    const match = parsed.pathname.match(/\/api\/v1\/instances\/(\d+)\/proxy(?:\/|$)/);
-    if (!match) {
-      return null;
-    }
-
-    const instanceId = Number(match[1]);
-    return Number.isFinite(instanceId) ? instanceId : null;
-  } catch {
-    return null;
-  }
-}
-
-function portalEmbedUrlForInstance(instance: Instance | null, embedUrl: string | null) {
-  if (!instance || !embedUrl) {
-    return embedUrl;
-  }
-
-  const embedUrlInstanceId = instanceIdFromProxyUrl(embedUrl);
-  if (embedUrlInstanceId !== null && embedUrlInstanceId !== instance.id) {
-    return null;
-  }
-
-  return embedUrl;
-}
 
 const InstancePortalPage: React.FC = () => {
   const { t } = useI18n();
@@ -89,11 +30,10 @@ const InstancePortalPage: React.FC = () => {
     string | null
   >(null);
   const [runtimeBurstUntil, setRuntimeBurstUntil] = useState<number>(0);
-  const [preparedPortalFrame, setPreparedPortalFrame] =
-    useState<PreparedPortalFrame | null>(null);
+  const [deviceApproving, setDeviceApproving] = useState(false);
+  const [deviceApproveMsg, setDeviceApproveMsg] = useState<string | null>(null);
   const frameShellRef = useRef<HTMLElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const pendingConnectInstanceIdRef = useRef<number | null>(null);
 
   const resolveEmbedUrl = useCallback((url: string | null) => {
     if (!url) {
@@ -109,10 +49,6 @@ const InstancePortalPage: React.FC = () => {
       | undefined;
     if (explicitOrigin) {
       return new URL(url, explicitOrigin).toString();
-    }
-
-    if (window.location.port === "9002" && url.startsWith("/api/")) {
-      return `${window.location.protocol}//${window.location.hostname}:9001${url}`;
     }
 
     return url;
@@ -163,16 +99,6 @@ const InstancePortalPage: React.FC = () => {
     () => instances.find((instance) => instance.id === selectedId) ?? null,
     [instances, selectedId],
   );
-  const selectedInstanceId = selectedInstance?.id ?? null;
-  const selectedInstanceStatus = selectedInstance?.status ?? null;
-  const selectedRuntimeType = selectedInstance?.runtime_type ?? "desktop";
-  const isShellPortal = selectedRuntimeType === "shell";
-  const isProPortal = Boolean(
-    selectedInstance && selectedInstance.instance_mode === "pro",
-  );
-  const canShowRuntimeOverlay = Boolean(
-    selectedInstance?.type === "openclaw" && isProPortal,
-  );
 
   const {
     embedUrl,
@@ -183,39 +109,16 @@ const InstancePortalPage: React.FC = () => {
     handleFrameError,
   } = useInstanceDesktopAccess({
     instanceId: selectedInstance?.id ?? null,
-    isRunning:
-      selectedInstance?.status === "running" && shouldConnect && !isShellPortal,
+    isRunning: selectedInstance?.status === "running" && shouldConnect,
     retainSessionOnStop: shouldConnect,
     resolveEmbedUrl,
     failedMessage: t("instances.failedToGenerateAccessToken"),
   });
 
-  const portalEmbedUrl = useMemo(
-    () => portalEmbedUrlForInstance(selectedInstance, embedUrl),
-    [embedUrl, selectedInstance],
-  );
-  const portalFrameSrc =
-    preparedPortalFrame?.instanceId === selectedInstanceId &&
-    preparedPortalFrame.embedUrl === portalEmbedUrl
-      ? preparedPortalFrame.src
-      : null;
-
   useEffect(() => {
-    if (!selectedInstance || !portalEmbedUrl) {
-      setPreparedPortalFrame(null);
-      return;
-    }
-
-    const src =
-      selectedInstance.type === "openclaw"
-        ? prepareOpenClawControlUIStorage(selectedInstance.id, portalEmbedUrl)
-        : portalEmbedUrl;
-    setPreparedPortalFrame({
-      instanceId: selectedInstance.id,
-      embedUrl: portalEmbedUrl,
-      src,
-    });
-  }, [portalEmbedUrl, selectedInstance]);
+    setShouldConnect(false);
+    setDeviceApproveMsg(null);
+  }, [selectedId]);
 
   const loadRuntimeDetails = useCallback(async (instanceId: number) => {
     try {
@@ -228,7 +131,7 @@ const InstancePortalPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!selectedInstance || !canShowRuntimeOverlay) {
+    if (!selectedInstance || selectedInstance.type !== "openclaw") {
       setRuntimeDetails(null);
       return;
     }
@@ -250,7 +153,7 @@ const InstancePortalPage: React.FC = () => {
     return () => {
       window.clearInterval(timer);
     };
-  }, [canShowRuntimeOverlay, loadRuntimeDetails, runtimeBurstUntil, selectedInstance]);
+  }, [loadRuntimeDetails, runtimeBurstUntil, selectedInstance]);
 
   useEffect(() => {
     if (runtimeBurstUntil <= Date.now()) {
@@ -296,25 +199,18 @@ const InstancePortalPage: React.FC = () => {
     }
   };
 
-  const requestAccess = useCallback(() => {
-    if (selectedInstanceId && selectedInstanceStatus === "running") {
-      const nextInstanceId = selectedInstanceId;
-      pendingConnectInstanceIdRef.current = nextInstanceId;
-      setShouldConnect(false);
-      window.setTimeout(() => {
-        if (pendingConnectInstanceIdRef.current === nextInstanceId) {
-          setShouldConnect(true);
-        }
-      }, 0);
+  const requestAccess = () => {
+    if (selectedInstance?.status === "running") {
+      setShouldConnect(true);
     }
-  }, [selectedInstanceId, selectedInstanceStatus]);
+  };
 
   const retryAccess = () => {
     if (!selectedInstance || selectedInstance.status !== "running") {
       return;
     }
 
-    if (shouldConnect && portalEmbedUrl) {
+    if (shouldConnect) {
       void refreshAccess({ forceReload: true });
       return;
     }
@@ -322,13 +218,26 @@ const InstancePortalPage: React.FC = () => {
     requestAccess();
   };
 
-  useEffect(() => {
-    if (!selectedInstanceId || selectedInstanceStatus !== "running" || isShellPortal) {
+  const handleApproveDevice = async () => {
+    if (!selectedInstance) {
       return;
     }
 
-    requestAccess();
-  }, [isShellPortal, requestAccess, selectedInstanceId, selectedInstanceStatus]);
+    try {
+      setDeviceApproving(true);
+      setDeviceApproveMsg(null);
+      const result = await instanceService.approveDevicePairing(
+        selectedInstance.id,
+      );
+      setDeviceApproveMsg(result.output || "Device approved successfully");
+    } catch (approveError: any) {
+      setDeviceApproveMsg(
+        approveError.response?.data?.error || "Failed to approve device",
+      );
+    } finally {
+      setDeviceApproving(false);
+    }
+  };
 
   const handleRuntimeCommand = async (
     command:
@@ -365,9 +274,7 @@ const InstancePortalPage: React.FC = () => {
 
   const playerStatusText = !selectedInstance
     ? t("instances.portalSelectInstanceSubtitle")
-    : isShellPortal && selectedInstance.status === "running"
-      ? t("instances.shellReady")
-      : portalEmbedUrl
+    : embedUrl
       ? t("instances.readyToAccess")
       : selectedInstance.status === "running"
         ? accessLoading && shouldConnect
@@ -406,13 +313,7 @@ const InstancePortalPage: React.FC = () => {
                       <li key={instance.id}>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (instance.id !== selectedId) {
-                              pendingConnectInstanceIdRef.current = null;
-                              setShouldConnect(false);
-                            }
-                            setSelectedId(instance.id);
-                          }}
+                          onClick={() => setSelectedId(instance.id)}
                           className={`flex w-full items-start gap-3 px-5 py-4 text-left transition-colors ${
                             isSelected ? "bg-[#fff7f3]" : "hover:bg-[#fffaf7]"
                           }`}
@@ -422,20 +323,11 @@ const InstancePortalPage: React.FC = () => {
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-3">
-                              <div className="flex min-w-0 items-center gap-2">
-                                <p
-                                  className={`truncate text-sm font-semibold ${isSelected ? "text-[#dc2626]" : "text-[#171212]"}`}
-                                >
-                                  {instance.name}
-                                </p>
-                                <span
-                                  className={`inline-flex shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${modeClass(
-                                    instance.instance_mode,
-                                  )}`}
-                                >
-                                  {modeLabel(instance.instance_mode)}
-                                </span>
-                              </div>
+                              <p
+                                className={`truncate text-sm font-semibold ${isSelected ? "text-[#dc2626]" : "text-[#171212]"}`}
+                              >
+                                {instance.name}
+                              </p>
                               <span
                                 className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                                   isRunning
@@ -447,7 +339,7 @@ const InstancePortalPage: React.FC = () => {
                               </span>
                             </div>
                             <p className="mt-1 text-xs text-[#8f8681]">
-                              {typeLabel(instance.type)} {instance.os_version}
+                              {instance.os_type} {instance.os_version}
                             </p>
                             <p className="mt-2 text-xs text-[#8f8681]">
                               {instance.cpu_cores} {t("common.cpu")} /{" "}
@@ -463,27 +355,10 @@ const InstancePortalPage: React.FC = () => {
             </div>
           </aside>
 
-          <div
-            data-portal-mode={isProPortal ? "pro" : "lite"}
-            className={`grid min-w-0 flex-1 gap-4 ${
-              isProPortal
-                ? "min-h-0 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_minmax(360px,28rem)] xl:grid-rows-[minmax(0,1fr)] xl:overflow-hidden"
-                : "min-h-0 overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(360px,28rem)]"
-            }`}
+          <section
+            ref={frameShellRef}
+            className={`flex min-w-0 flex-1 flex-col overflow-hidden border border-[#1f2937] bg-[#111827] shadow-[0_30px_90px_-56px_rgba(17,24,39,0.9)] ${isFullscreen ? "rounded-none" : "rounded-[30px]"}`}
           >
-            <div
-              className={
-                isProPortal
-                  ? "min-h-[420px] min-w-0 overflow-hidden xl:min-h-0"
-                  : "min-h-0 min-w-0"
-              }
-            >
-              <section
-                ref={frameShellRef}
-                className={`flex h-full min-w-0 flex-col overflow-hidden border border-[#1f2937] bg-[#111827] shadow-[0_30px_90px_-56px_rgba(17,24,39,0.9)] ${
-                  isFullscreen ? "rounded-none" : isProPortal ? "rounded-[30px]" : "rounded-lg"
-                }`}
-              >
             <div className="flex items-center justify-between border-b border-[#2b3443] bg-[#182131] px-4 py-3 text-white">
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">
@@ -497,8 +372,27 @@ const InstancePortalPage: React.FC = () => {
               <div className="flex items-center gap-2">
                 {selectedInstance &&
                   selectedInstance.status === "running" &&
-                  portalEmbedUrl &&
-                  !isShellPortal && (
+                  selectedInstance.type === "openclaw" && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleApproveDevice}
+                        disabled={deviceApproving}
+                        className="rounded-lg bg-[#243041] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#31415a] disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {deviceApproving
+                          ? t("instances.approvingDevice") || "Approving…"
+                          : t("instances.approveDevice") || "Approve Device"}
+                      </button>
+                      {deviceApproveMsg && (
+                        <span className="max-w-[200px] truncate text-[11px] text-[#aab4c4]">
+                          {deviceApproveMsg}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                {selectedInstance &&
+                  selectedInstance.status === "running" &&
+                  embedUrl && (
                     <button
                       onClick={() => refreshAccess({ forceReload: true })}
                       className="rounded-lg bg-[#243041] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#31415a]"
@@ -506,9 +400,7 @@ const InstancePortalPage: React.FC = () => {
                       {t("instances.refreshToken")}
                     </button>
                   )}
-                {(portalEmbedUrl ||
-                  (isShellPortal &&
-                    selectedInstance?.status === "running")) && (
+                {embedUrl && (
                   <button
                     type="button"
                     onClick={toggleFullscreen}
@@ -549,31 +441,21 @@ const InstancePortalPage: React.FC = () => {
             </div>
 
             <div className="min-h-0 flex-1">
-              {selectedInstance &&
-              isShellPortal &&
-              selectedInstance.status === "running" ? (
-                <InstanceShellTerminal
-                  instanceId={selectedInstance.id}
-                  instanceName={selectedInstance.name}
-                  isRunning={selectedInstance.status === "running"}
-                  heightClassName="h-full min-h-0 max-h-none"
-                  className="rounded-none border-0 shadow-none"
-                />
-              ) : portalFrameSrc ? (
+              {embedUrl ? (
                 <div className="relative h-full">
-                  {canShowRuntimeOverlay && (
+                  {selectedInstance?.type === "openclaw" && (
                     <OpenClawDesktopOverlay
                       gatewayStatus={
                         runtimeDetails?.runtime?.openclaw_status || "unknown"
                       }
-                      canControl={selectedInstance?.status === "running"}
+                      canControl={selectedInstance.status === "running"}
                       actionLoading={runtimeActionLoading}
                       onCommand={handleRuntimeCommand}
                     />
                   )}
                   <iframe
                     ref={iframeRef}
-                    src={portalFrameSrc}
+                    src={embedUrl}
                     title={
                       selectedInstance
                         ? `${selectedInstance.name} portal`
@@ -586,11 +468,9 @@ const InstancePortalPage: React.FC = () => {
                     onError={handleFrameError}
                   />
                 </div>
-              ) : selectedInstance &&
-                selectedInstance.status === "running" &&
-                !isShellPortal ? (
+              ) : selectedInstance && selectedInstance.status === "running" ? (
                 <div className="relative flex h-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_26%),linear-gradient(180deg,#111827_0%,#0f172a_100%)] px-8 text-center">
-                  {canShowRuntimeOverlay && (
+                  {selectedInstance.type === "openclaw" && (
                     <OpenClawDesktopOverlay
                       gatewayStatus={
                         runtimeDetails?.runtime?.openclaw_status || "unknown"
@@ -604,7 +484,6 @@ const InstancePortalPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={retryAccess}
-                      onPointerUp={retryAccess}
                       disabled={accessLoading}
                       aria-label={t("instances.generateAccess")}
                       className="group flex h-24 w-24 items-center justify-center rounded-full border border-white/20 bg-white/10 text-white backdrop-blur transition hover:scale-[1.03] hover:bg-white/16 disabled:cursor-wait disabled:opacity-70"
@@ -659,36 +538,7 @@ const InstancePortalPage: React.FC = () => {
                 </div>
               )}
             </div>
-              </section>
-            </div>
-
-            {selectedInstance && supportsWorkspace(selectedInstance) ? (
-              <div
-                className={`min-w-0 ${
-                  isProPortal ? "min-h-[420px] xl:h-full xl:min-h-0" : "h-full min-h-[420px]"
-                }`}
-              >
-                {isProPortal ? (
-                  <WorkspaceFileManager
-                    instanceId={selectedInstance.id}
-                    initialPath="/config"
-                  />
-                ) : (
-                  <WorkspaceFileManager instanceId={selectedInstance.id} />
-                )}
-              </div>
-            ) : (
-              <div
-                className={`cm-surface flex min-w-0 items-center justify-center text-sm text-slate-500 ${
-                  isProPortal ? "min-h-[420px]" : "h-full min-h-[420px]"
-                }`}
-              >
-                {selectedInstance
-                  ? "No workspace"
-                  : t("instances.portalSelectInstanceSubtitle")}
-              </div>
-            )}
-          </div>
+          </section>
         </div>
       </div>
     </UserLayout>

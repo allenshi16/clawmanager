@@ -1042,8 +1042,7 @@ func (h *InstanceHandler) proxyInstanceWithToken(c *gin.Context, id int, token s
 		return
 	}
 
-	// Look up the instance's gateway token so the proxy can inject it into the
-	// proxied HTML for the OpenClaw Control UI to authenticate with the gateway WebSocket.
+	// Look up gateway token for HTML injection
 	var gatewayToken string
 	if instance, lookupErr := h.instanceService.GetByID(id); lookupErr == nil && instance != nil && instance.AccessToken != nil {
 		gatewayToken = *instance.AccessToken
