@@ -4,8 +4,6 @@ import AdminLayout from '../../components/AdminLayout';
 import { userService } from '../../services/userService';
 import { adminInstanceService } from '../../services/adminInstanceService';
 import { adminService, type ClusterResourceOverview, type ResourceSummary } from '../../services/adminService';
-import { agentVariantService } from '../../services/agentVariantService';
-import type { TemplateStats } from '../../types/agentVariant';
 import { useI18n } from '../../contexts/I18nContext';
 
 interface DashboardStats {
@@ -71,7 +69,6 @@ const AdminDashboard: React.FC = () => {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [templateStats, setTemplateStats] = useState<TemplateStats | null>(null);
   const [clusterResources, setClusterResources] = useState<ClusterResourceOverview | null>(null);
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -82,13 +79,11 @@ const AdminDashboard: React.FC = () => {
         setLoading(true);
         setError(null);
 
-        const [usersData, instancesData, clusterData, statsData] = await Promise.all([
+        const [usersData, instancesData, clusterData] = await Promise.all([
           userService.getUsers(1, 1000),
           adminInstanceService.getInstances(1, 1000),
           adminService.getClusterResources(),
-          agentVariantService.getStats().catch(() => null),
         ]);
-        setTemplateStats(statsData);
 
         const instances = instancesData.instances || [];
         const runningInstances = instances.filter((instance) => instance.status === 'running').length;
@@ -265,94 +260,6 @@ const AdminDashboard: React.FC = () => {
           iconPath="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z"
           openLabel={t('admin.openSection')}
         />
-      </section>
-
-      <section className="mt-10">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#b46c50]">{t('admin.templateStats')}</p>
-            <h2 className="mt-2 text-2xl font-semibold text-[#1d1713]">{t('admin.templateAppMarket')}</h2>
-            <p className="mt-1 max-w-xl text-[13px] leading-5 text-[#7a6d66]">
-              {t('admin.templateAppMarketDesc')}
-            </p>
-          </div>
-          {templateStats && (
-            <Link
-              to="/admin/agent-variants"
-              className="rounded-full border border-[#ead7cd] bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#a05f46] shadow-sm transition-all hover:border-[#ef6b4a] hover:text-[#ef6b4a]"
-            >
-              {t('admin.showAll')}
-            </Link>
-          )}
-        </div>
-
-        <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-          <MiniSignal
-            label={t('admin.totalTemplates')}
-            value={loading || !templateStats ? '--' : `${templateStats.total_templates}`}
-          />
-          <MiniSignal
-            label={t('admin.publishedTemplates')}
-            value={loading || !templateStats ? '--' : `${templateStats.status_counts?.published ?? 0}`}
-          />
-          <MiniSignal
-            label={t('admin.totalTemplateUsage')}
-            value={loading || !templateStats ? '--' : `${templateStats.total_usage_count}`}
-          />
-          <MiniSignal
-            label={t('admin.totalForks')}
-            value={loading || !templateStats ? '--' : `${templateStats.total_forks}`}
-          />
-        </div>
-
-        {templateStats && templateStats.most_popular && templateStats.most_popular.length > 0 && (
-          <div className="mt-6 overflow-hidden rounded-[28px] border border-[#ead8cf] bg-[linear-gradient(180deg,rgba(255,255,255,0.88)_0%,rgba(255,250,246,0.96)_100%)] shadow-[0_24px_70px_-52px_rgba(72,44,24,0.5)]">
-            <div className="border-b border-[#efe2da] px-6 py-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#b46c50]">{t('admin.popularTemplates')}</p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full">
-                <thead>
-                  <tr className="border-b border-[#f0e3db] bg-[linear-gradient(180deg,#fffaf6_0%,#fff6f1_100%)] text-left text-[11px] font-semibold uppercase tracking-[0.18em] text-[#9d7d6e]">
-                    <th className="px-6 py-4">{t('admin.templateName')}</th>
-                    <th className="px-6 py-4">{t('admin.templateStatus')}</th>
-                    <th className="px-6 py-4">{t('admin.templateVersion')}</th>
-                    <th className="px-6 py-4 text-right">{t('admin.templateUsage')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {templateStats.most_popular.slice(0, 5).map((tmpl) => (
-                    <tr key={tmpl.id} className="border-b border-[#f2e8e2] text-sm transition-colors hover:bg-[#fffaf6]">
-                      <td className="px-6 py-4">
-                        <Link
-                          to={`/admin/agent-variants`}
-                          className="font-semibold text-[#1d1713] hover:text-[#ef6b4a]"
-                        >
-                          {tmpl.name}
-                        </Link>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
-                          tmpl.status === 'published' ? 'bg-[#dcfce7] text-[#15803d]' :
-                          tmpl.status === 'draft' ? 'bg-[#fef9c3] text-[#a16207]' :
-                          tmpl.status === 'deprecated' ? 'bg-[#fee2e2] text-[#b91c1c]' :
-                          'bg-[#f3f4f6] text-[#6b7280]'
-                        }`}>
-                          {tmpl.status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 tabular-nums text-[#7a6d66]">v{tmpl.version}</td>
-                      <td className="px-6 py-4 text-right font-semibold tabular-nums text-[#1d1713]">{tmpl.usage_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {templateStats.most_popular.length === 0 && (
-              <div className="px-6 py-12 text-center text-sm text-[#8f8681]">{t('admin.noTemplates')}</div>
-            )}
-          </div>
-        )}
       </section>
 
       <section className="mt-10">

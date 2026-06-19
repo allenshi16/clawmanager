@@ -7,8 +7,6 @@ import {
   type SecurityScanConfig,
   type SecurityScanJob,
 } from '../../services/adminService';
-import { skillService } from '../../services/skillService';
-import { Download, Pencil, Trash2 } from 'lucide-react';
 
 const AdminSkillsPage: React.FC = () => {
   const { t } = useI18n();
@@ -25,11 +23,6 @@ const AdminSkillsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [assetPage, setAssetPage] = useState(1);
   const [selectedAssetId, setSelectedAssetId] = useState<number | null>(null);
-  const [editingSkill, setEditingSkill] = useState<AdminSkillRecord | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDesc, setEditDesc] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const pageSize = 10;
 
@@ -158,62 +151,6 @@ const AdminSkillsPage: React.FC = () => {
       setSelectedJob(detail);
     } catch (err: any) {
       setError(err.response?.data?.error || '加载扫描报告失败。');
-    }
-  };
-
-  const handleDownload = async (skill: AdminSkillRecord) => {
-    try {
-      const blob = await skillService.adminDownloadSkill(skill.id);
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${skill.name || skill.skill_key}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.response?.data?.error || '下载技能失败。');
-    }
-  };
-
-  const handleOpenEdit = (skill: AdminSkillRecord) => {
-    setEditingSkill(skill);
-    setEditName(skill.name);
-    setEditDesc('');
-    setError(null);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingSkill) return;
-    try {
-      setSavingEdit(true);
-      setError(null);
-      await skillService.updateSkill(editingSkill.id, {
-        name: editName.trim() || editingSkill.name,
-        description: editDesc.trim() || undefined,
-        status: editingSkill.status,
-      });
-      setEditingSkill(null);
-      await loadAll('refresh');
-    } catch (err: any) {
-      setError(err.response?.data?.error || '保存技能失败。');
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-
-  const handleDelete = async (skill: AdminSkillRecord) => {
-    if (!window.confirm(`确定删除技能"${skill.name}"吗？此操作不可撤销。`)) return;
-    try {
-      setDeletingId(skill.id);
-      setError(null);
-      await skillService.deleteSkill(skill.id);
-      await loadAll('refresh');
-    } catch (err: any) {
-      setError(err.response?.data?.error || '删除技能失败。');
-    } finally {
-      setDeletingId(null);
     }
   };
 
@@ -447,7 +384,6 @@ const AdminSkillsPage: React.FC = () => {
                         <th className="px-4 py-3">风险</th>
                         <th className="px-4 py-3">最近扫描</th>
                         <th className="px-4 py-3">实例数</th>
-                        <th className="px-4 py-3">操作</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#f5ebe5]">
@@ -472,32 +408,6 @@ const AdminSkillsPage: React.FC = () => {
                           <td className="px-4 py-3"><Badge tone={riskTone(item.risk_level)}>{riskLabel(item.risk_level)}</Badge></td>
                           <td className="px-4 py-3 text-[#5f5957]">{item.last_scanned_at ? formatDateTime(item.last_scanned_at) : '未扫描'}</td>
                           <td className="px-4 py-3 text-[#5f5957]">{item.instance_count}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDownload(item); }}
-                                className="rounded-lg p-1.5 text-[#8f8681] hover:bg-[#f5ebe5] hover:text-[#171212] transition"
-                                title="下载"
-                              >
-                                <Download size={14} />
-                              </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleOpenEdit(item); }}
-                                className="rounded-lg p-1.5 text-[#8f8681] hover:bg-[#f5ebe5] hover:text-[#171212] transition"
-                                title="编辑"
-                              >
-                                <Pencil size={14} />
-                              </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDelete(item); }}
-                                disabled={deletingId === item.id}
-                                className="rounded-lg p-1.5 text-[#8f8681] hover:bg-[#f5ebe5] hover:text-red-600 transition disabled:opacity-40"
-                                title="删除"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -736,51 +646,6 @@ const AdminSkillsPage: React.FC = () => {
           </div>
         </section>
       </div>
-
-      {/* Edit Skill Modal */}
-      {editingSkill && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setEditingSkill(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
-            <h3 className="text-lg font-semibold text-[#171212] mb-4">
-              编辑技能 — {editingSkill.name}
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">名称</label>
-                <input
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="app-input w-full"
-                  placeholder="技能名称"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">描述</label>
-                <textarea
-                  value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  className="app-input w-full"
-                  rows={3}
-                  placeholder="技能描述（可选）"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-6">
-              <button onClick={() => setEditingSkill(null)} className="app-button-secondary">
-                取消
-              </button>
-              <button
-                onClick={handleSaveEdit}
-                disabled={savingEdit}
-                className="app-button-primary disabled:opacity-50"
-              >
-                {savingEdit ? '保存中...' : '保存'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </AdminLayout>
   );
 };

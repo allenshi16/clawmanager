@@ -13,7 +13,6 @@ import type {
   ExternalAccessRequest,
 } from "../types/instance";
 import type { InstanceSkill } from "../types/skill";
-import type { UpgradeCheckResult } from "../types/agentVariant";
 
 export const instanceService = {
   // Get instance list
@@ -210,22 +209,6 @@ export const instanceService = {
 
   listSkills: async (id: number): Promise<InstanceSkill[]> => {
     const response = await api.get(`/instances/${id}/skills`);
-    return response.data.data;
-  },
-
-  upgradeCheck: async (id: number): Promise<UpgradeCheckResult> => {
-    const response = await api.get(`/instances/${id}/upgrade-check`);
-    return response.data.data;
-  },
-
-  upgradeInstance: async (id: number): Promise<void> => {
-    await api.post(`/instances/${id}/upgrade`);
-  },
-
-  approveDevicePairing: async (
-    id: number,
-  ): Promise<{ output: string }> => {
-    const response = await api.post(`/instances/${id}/devices/approve`);
     return response.data.data;
   },
 };

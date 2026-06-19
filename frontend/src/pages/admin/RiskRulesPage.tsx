@@ -908,7 +908,7 @@ const RiskRulesPage: React.FC = () => {
                           value={rule.display_name}
                           onChange={(event) => updateRule(rule.local_id, { display_name: event.target.value })}
                           className="app-input mt-1 block w-full"
-                          placeholder={t('riskRulesPage.emailPlaceholder')}
+                          placeholder="Email address"
                         />
                       </div>
                     </div>

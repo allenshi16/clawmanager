@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import UserLayout from "../../components/UserLayout";
 import { useI18n } from "../../contexts/I18nContext";
@@ -11,6 +11,7 @@ import { skillService } from "../../services/skillService";
 import type {
   OpenClawConfigBundle,
   OpenClawConfigBundleItem,
+  OpenClawConfigBundleSkillItem,
   OpenClawConfigMode,
   OpenClawConfigResource,
   OpenClawInjectionSnapshot,
@@ -63,6 +64,7 @@ const CHANNEL_TEMPLATE_LABEL_I18N_KEYS: Record<string, string> = {
   telegram: "openClawResourcesPage.templates.telegram.label",
   "dingtalk-connector":
     "openClawResourcesPage.templates.dingtalkConnector.label",
+  wecom: "openClawResourcesPage.templates.wecom.label",
   slack: "openClawResourcesPage.templates.slack.label",
   feishu: "openClawResourcesPage.templates.feishu.label",
 };
@@ -71,6 +73,7 @@ const CHANNEL_TEMPLATE_DESCRIPTION_I18N_KEYS: Record<string, string> = {
   telegram: "openClawResourcesPage.templates.telegram.description",
   "dingtalk-connector":
     "openClawResourcesPage.templates.dingtalkConnector.description",
+  wecom: "openClawResourcesPage.templates.wecom.description",
   slack: "openClawResourcesPage.templates.slack.description",
   feishu: "openClawResourcesPage.templates.feishu.description",
 };
@@ -151,6 +154,7 @@ const newBundleForm = () => ({
   description: "",
   enabled: true,
   itemIds: [] as number[],
+  skillIds: [] as number[],
 });
 
 const splitTagText = (value: string): string[] =>
@@ -168,7 +172,8 @@ type SupportedChannelEditorId =
   | "dingtalk-connector"
   | "feishu"
   | "slack"
-  | "telegram";
+  | "telegram"
+  | "wecom";
 
 interface SupportedChannelEditorField {
   key: string;
@@ -306,6 +311,53 @@ const updateTelegramChannelContentText = (
         ? parsed.dmPolicy
         : "open",
     allowFrom: readStringArray(parsed.allowFrom) || ["*"],
+  };
+
+  return stringifyChannelContentText(mergeChannelConfig(parsed, allowlisted));
+};
+
+const readWeComChannelFormState = (
+  contentText: string,
+): Record<string, string> | null => {
+  const config = parseChannelContentText(contentText);
+  if (!config) {
+    return null;
+  }
+
+  return {
+    botId: typeof config.botId === "string" ? config.botId : "",
+    secret: typeof config.secret === "string" ? config.secret : "",
+  };
+};
+
+const updateWeComChannelContentText = (
+  contentText: string,
+  patch: Record<string, string>,
+): string => {
+  const parsed = parseChannelContentText(contentText);
+  if (!parsed) {
+    return contentText;
+  }
+
+  const currentForm = readWeComChannelFormState(contentText);
+  if (!currentForm) {
+    return contentText;
+  }
+
+  const nextForm = {
+    ...currentForm,
+    ...patch,
+  };
+
+  const allowFrom = readStringArray(parsed.allowFrom);
+  const allowlisted = {
+    botId: nextForm.botId,
+    secret: nextForm.secret,
+    dmPolicy:
+      typeof parsed.dmPolicy === "string" && parsed.dmPolicy
+        ? parsed.dmPolicy
+        : "pairing",
+    allowFrom: allowFrom && allowFrom.length > 0 ? allowFrom : ["*"],
   };
 
   return stringifyChannelContentText(mergeChannelConfig(parsed, allowlisted));
@@ -498,9 +550,14 @@ const detectSupportedChannelEditor = (
   const hasClientSecret = config && typeof config.clientSecret === "string";
   const hasAppToken = config && typeof config.appToken === "string";
   const hasBotToken = config && typeof config.botToken === "string";
+  const hasBotId = config && typeof config.botId === "string";
+  const hasSecret = config && typeof config.secret === "string";
 
   if (normalizedResourceKey === "feishu" || domain === "feishu" || !!accounts) {
     return "feishu";
+  }
+  if (normalizedResourceKey === "wecom" || (hasBotId && hasSecret)) {
+    return "wecom";
   }
   if (
     normalizedResourceKey === "dingtalk-connector" ||
@@ -562,6 +619,12 @@ const normalizeResourceContentTextForEditor = (
       ? updateTelegramChannelContentText(normalizedContentText, currentForm)
       : normalizedContentText;
   }
+  if (editorId === "wecom") {
+    const currentForm = readWeComChannelFormState(normalizedContentText);
+    return currentForm
+      ? updateWeComChannelContentText(normalizedContentText, currentForm)
+      : normalizedContentText;
+  }
 
   return normalizedContentText;
 };
@@ -593,6 +656,28 @@ const SUPPORTED_CHANNEL_EDITORS: Record<
     ],
     readFormState: readDingTalkChannelFormState,
     updateContentText: updateDingTalkChannelContentText,
+  },
+  wecom: {
+    id: "wecom",
+    titleKey: "openClawResourcesPage.channelEditors.wecom.title",
+    descriptionKey: "openClawResourcesPage.channelEditors.wecom.description",
+    fields: [
+      {
+        key: "botId",
+        labelKey: "openClawResourcesPage.channelEditors.wecom.fields.botId.label",
+        placeholderKey:
+          "openClawResourcesPage.channelEditors.wecom.fields.botId.placeholder",
+      },
+      {
+        key: "secret",
+        labelKey:
+          "openClawResourcesPage.channelEditors.wecom.fields.secret.label",
+        placeholderKey:
+          "openClawResourcesPage.channelEditors.wecom.fields.secret.placeholder",
+      },
+    ],
+    readFormState: readWeComChannelFormState,
+    updateContentText: updateWeComChannelContentText,
   },
   feishu: {
     id: "feishu",
@@ -759,6 +844,7 @@ const bundleFormFromItem = (item: OpenClawConfigBundle) => ({
   description: item.description || "",
   enabled: item.enabled,
   itemIds: item.items.map((bundleItem) => bundleItem.resource_id),
+  skillIds: (item.skill_items || []).map((bundleSkill) => bundleSkill.skill_id),
 });
 
 const skillRiskKey = (riskLevel?: string | null) => {
@@ -808,10 +894,6 @@ const OpenClawConfigCenterPage: React.FC = () => {
   const [channelEditorMode, setChannelEditorMode] =
     useState<ChannelEditorMode>("form");
   const [skillUploadFile, setSkillUploadFile] = useState<File | null>(null);
-  const [editingSkill, setEditingSkill] = useState<Skill | null>(null);
-  const [editSkillName, setEditSkillName] = useState('');
-  const [editSkillDesc, setEditSkillDesc] = useState('');
-  const [savingSkillEdit, setSavingSkillEdit] = useState(false);
 
   const loadAll = async () => {
     try {
@@ -936,10 +1018,50 @@ const OpenClawConfigCenterPage: React.FC = () => {
       })),
     [resourceTypeOptions, resources],
   );
+  const bundleSkillOptions = useMemo(
+    () =>
+      skills.filter(
+        (item) =>
+          bundleForm.skillIds.includes(item.id) ||
+          (item.status === "active" &&
+            item.risk_level !== "medium" &&
+            item.risk_level !== "high"),
+      ),
+    [bundleForm.skillIds, skills],
+  );
 
   const selectedChannelTemplate = useMemo(
     () => findOpenClawChannelTemplate(selectedChannelTemplateId),
     [selectedChannelTemplateId],
+  );
+  const buildUniqueResourceKey = useCallback(
+    (baseKey: string): string => {
+      const trimmedBaseKey = baseKey.trim();
+      if (!trimmedBaseKey) {
+        return "";
+      }
+
+      const existingKeys = new Set(
+        resources
+          .filter(
+            (item) =>
+              item.resource_type === "channel" && item.id !== selectedResourceId,
+          )
+          .map((item) => item.resource_key.trim().toLowerCase()),
+      );
+      if (!existingKeys.has(trimmedBaseKey.toLowerCase())) {
+        return trimmedBaseKey;
+      }
+
+      let suffix = 2;
+      let candidate = `${trimmedBaseKey}-${suffix}`;
+      while (existingKeys.has(candidate.toLowerCase())) {
+        suffix += 1;
+        candidate = `${trimmedBaseKey}-${suffix}`;
+      }
+      return candidate;
+    },
+    [resources, selectedResourceId],
   );
   const supportedChannelEditorId = useMemo(
     () =>
@@ -1254,36 +1376,6 @@ const OpenClawConfigCenterPage: React.FC = () => {
     }
   };
 
-  const openEditSkill = (skill: Skill) => {
-    setEditingSkill(skill);
-    setEditSkillName(skill.name);
-    setEditSkillDesc(skill.description ?? '');
-    setError(null);
-  };
-
-  const saveEditSkill = async () => {
-    if (!editingSkill) return;
-    try {
-      setSavingSkillEdit(true);
-      setError(null);
-      await skillService.updateSkill(editingSkill.id, {
-        name: editSkillName.trim() || editingSkill.name,
-        description: editSkillDesc.trim() || undefined,
-        status: editingSkill.status,
-      });
-      setEditingSkill(null);
-      await loadAll();
-      setNotice(t("openClawResourcesPage.notices.skillUpdated"));
-    } catch (err: any) {
-      setError(
-        err.response?.data?.error ||
-          t("openClawResourcesPage.errors.editSkill"),
-      );
-    } finally {
-      setSavingSkillEdit(false);
-    }
-  };
-
   const applyChannelTemplate = (templateId: string) => {
     const template = findOpenClawChannelTemplate(templateId);
     if (!template) {
@@ -1307,7 +1399,9 @@ const OpenClawConfigCenterPage: React.FC = () => {
     setResourceForm((current) => ({
       ...current,
       resource_type: "channel",
-      resource_key: current.resource_key.trim() || template.resourceKey,
+      resource_key:
+        current.resource_key.trim() ||
+        buildUniqueResourceKey(template.resourceKey),
       name: current.name.trim() || templateLabel,
       description: current.description.trim() || templateDescription,
       tagsText: mergeTagText(current.tagsText, template.tags),
@@ -1328,6 +1422,13 @@ const OpenClawConfigCenterPage: React.FC = () => {
         items: bundleForm.itemIds.map(
           (resourceId, index): OpenClawConfigBundleItem => ({
             resource_id: resourceId,
+            sort_order: index + 1,
+            required: true,
+          }),
+        ),
+        skill_items: bundleForm.skillIds.map(
+          (skillId, index): OpenClawConfigBundleSkillItem => ({
+            skill_id: skillId,
             sort_order: index + 1,
             required: true,
           }),
@@ -1561,17 +1662,6 @@ const OpenClawConfigCenterPage: React.FC = () => {
                                 )}
                               </div>
                               <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    openEditSkill(item)
-                                  }
-                                  className="app-button-secondary"
-                                >
-                                  {t(
-                                    "openClawResourcesPage.skillActions.edit",
-                                  )}
-                                </button>
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -1831,7 +1921,9 @@ const OpenClawConfigCenterPage: React.FC = () => {
                         </div>
                         <div className="mt-1 text-xs text-gray-500">
                           {t("openClawResourcesPage.bundleResourceCount", {
-                            count: item.items.length,
+                            count:
+                              item.items.length +
+                              (item.skill_items?.length || 0),
                           })}
                         </div>
                         {item.description && (
@@ -2468,6 +2560,53 @@ const OpenClawConfigCenterPage: React.FC = () => {
                   </div>
                 </div>
               ))}
+              <div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#b46c50]">
+                  {t("openClawResourcesPage.uploadedSkills")}
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {bundleSkillOptions.map((item) => {
+                    const checked = bundleForm.skillIds.includes(item.id);
+                    return (
+                      <label
+                        key={item.id}
+                        className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 ${checked ? "border-indigo-300 bg-indigo-50" : "border-gray-200 bg-white"}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setBundleForm((current) => ({
+                              ...current,
+                              skillIds: e.target.checked
+                                ? [...current.skillIds, item.id]
+                                : current.skillIds.filter(
+                                    (value) => value !== item.id,
+                                  ),
+                            }))
+                          }
+                        />
+                        <span>
+                          <span className="block font-medium text-gray-900">
+                            {item.name}
+                          </span>
+                          <span className="mt-1 block text-xs text-gray-500">
+                            {item.skill_key}
+                          </span>
+                          <span className="mt-1 block text-xs text-gray-500">
+                            {getSkillRiskLabel(item.risk_level)}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {bundleSkillOptions.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-gray-300 px-4 py-3 text-sm text-gray-500">
+                      {t("openClawResourcesPage.noUploadedSkillsForBundle")}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -2505,55 +2644,6 @@ const OpenClawConfigCenterPage: React.FC = () => {
           </div>
         </div>
       </EditorModal>
-
-      {/* Edit Skill Modal */}
-      {editingSkill && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setEditingSkill(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
-            <h3 className="text-lg font-semibold text-[#171212] mb-4">
-              {t("openClawResourcesPage.skillActions.edit")} — {editingSkill.name}
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {t("openClawResourcesPage.resourceFieldLabels.name")}
-                </label>
-                <input
-                  value={editSkillName}
-                  onChange={(e) => setEditSkillName(e.target.value)}
-                  className="app-input w-full"
-                  placeholder={t("openClawResourcesPage.resourceFieldLabels.name")}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {t("openClawResourcesPage.resourceFieldLabels.description")}
-                </label>
-                <textarea
-                  value={editSkillDesc}
-                  onChange={(e) => setEditSkillDesc(e.target.value)}
-                  className="app-input w-full"
-                  rows={3}
-                  placeholder={t("openClawResourcesPage.resourceFieldLabels.description")}
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-6">
-              <button onClick={() => setEditingSkill(null)} className="app-button-secondary">
-                {t("common.cancel")}
-              </button>
-              <button
-                onClick={saveEditSkill}
-                disabled={savingSkillEdit}
-                className="app-button-primary disabled:opacity-50"
-              >
-                {savingSkillEdit ? t("common.saving") : t("common.save")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </UserLayout>
   );
 };

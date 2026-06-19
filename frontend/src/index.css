@@ -93,16 +93,4 @@ body {
   .cm-icon-button:hover {
     @apply border-slate-400 bg-slate-50 text-slate-950;
   }
-
-  .bento-card {
-    @apply bg-white border border-[#eadfd8] rounded-3xl p-5 transition-all duration-300 relative;
-  }
-
-  .bento-inner {
-    @apply bg-[#fdf9f7] border border-[#eadfd8] rounded-2xl p-4 transition-all duration-200;
-  }
-
-  .text-gradient {
-    @apply bg-gradient-to-br from-[#171212] to-[#8f8681] bg-clip-text text-transparent;
-  }
 }

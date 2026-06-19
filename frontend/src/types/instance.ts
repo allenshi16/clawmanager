@@ -1,10 +1,6 @@
 import type { OpenClawConfigPlan } from "./openclawConfig";
 import type { InstanceSkill } from "./skill";
 
-export type V2InstanceType = "openclaw" | "hermes";
-export type InstanceMode = "lite" | "pro";
-export type InstanceAvailability = "available" | "starting" | "unavailable";
-
 export interface Instance {
   id: number;
   user_id: number;
@@ -17,8 +13,9 @@ export interface Instance {
     | "centos"
     | "custom"
     | "webtop"
-    | "hermes"
-    | "hermes-agent";
+    | "hermes";
+  runtime_type: "desktop" | "shell" | "gateway";
+  instance_mode: "lite" | "pro";
   status: "creating" | "running" | "stopped" | "error" | "deleting";
   cpu_cores: number;
   memory_gb: number;
@@ -31,36 +28,76 @@ export interface Instance {
   image_tag?: string;
   storage_class: string;
   mount_path: string;
+  workspace_path?: string;
+  workspace_usage_bytes?: number;
+  runtime_generation?: number;
+  runtime_error_message?: string;
   pod_name?: string;
   pod_namespace?: string;
   pod_ip?: string;
   access_url?: string;
   openclaw_config_snapshot_id?: number;
-  variant_id?: number;
-  variant_version?: number;
-  runtime_type: "desktop" | "shell" | "gateway";
-  instance_mode: "lite" | "pro";
-  workspace_path?: string;
-  workspace_usage_bytes?: number;
-  runtime_generation?: number;
-  runtime_error_message?: string;
-  availability?: InstanceAvailability;
-  agent_type?: V2InstanceType;
   created_at: string;
   updated_at: string;
   started_at?: string;
   stopped_at?: string;
 }
 
+export type V2InstanceType = "openclaw" | "hermes";
+export type InstanceMode = "lite" | "pro";
+export type InstanceAvailability = "available" | "starting" | "unavailable";
+
 export interface InstanceStatus {
   instance_id: number;
   status: string;
+  availability?: InstanceAvailability;
+  agent_type?: V2InstanceType;
+  workspace_usage_bytes?: number;
   pod_name?: string;
   pod_namespace?: string;
   pod_ip?: string;
   pod_status?: string;
   created_at: string;
   started_at?: string;
+}
+
+export interface InstanceExternalAccess {
+  id: number;
+  instance_id: number;
+  enabled: boolean;
+  auth_mode: "share_link" | "password";
+  password_hint?: string;
+  expires_at?: string;
+  created_by?: number;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ExternalAccessExpirationMode = "preset" | "custom" | "permanent";
+export type ExternalAccessExpirationPreset = "1h" | "24h" | "7d" | "30d";
+
+export interface ExternalAccessRequest {
+  expires_mode?: ExternalAccessExpirationMode;
+  expires_preset?: ExternalAccessExpirationPreset;
+  expires_at?: string;
+}
+
+export interface ExternalAccessStatusResult {
+  external_access?: InstanceExternalAccess | null;
+  share_url?: string;
+  password?: string;
+}
+
+export interface EnableShareLinkResult {
+  access: InstanceExternalAccess;
+  share_url?: string;
+}
+
+export interface PasswordExternalAccessResult {
+  access: InstanceExternalAccess;
+  password: string;
+  share_url?: string;
 }
 
 export interface AgentInfo {
@@ -138,9 +175,10 @@ export interface CreateInstanceRequest {
     | "centos"
     | "custom"
     | "webtop"
-    | "hermes"
-    | "hermes-agent";
-  variant_id?: number;
+    | "hermes";
+  mode?: InstanceMode;
+  instance_mode?: InstanceMode;
+  runtime_type?: "desktop" | "shell" | "gateway";
   cpu_cores: number;
   memory_gb: number;
   disk_gb: number;
@@ -154,6 +192,7 @@ export interface CreateInstanceRequest {
   storage_class?: string;
   openclaw_config_plan?: OpenClawConfigPlan;
   skill_ids?: number[];
+  variant_id?: number;
 }
 
 export interface UpdateInstanceRequest {
@@ -227,14 +266,6 @@ export const INSTANCE_TYPES: InstanceType[] = [
     defaultVersion: "latest",
   },
   {
-    id: "hermes-agent",
-    name: "Hermes Agent (Nous Research)",
-    description: "Nous Research Hermes agent runtime with reasoning and self-improvement capabilities",
-    icon: "hermes-agent",
-    defaultOs: "ubuntu",
-    defaultVersion: "22.04",
-  },
-  {
     id: "custom",
     name: "Custom Image",
     description: "Use your own custom image",
@@ -244,17 +275,7 @@ export const INSTANCE_TYPES: InstanceType[] = [
   },
 ];
 
-export type PresetKey = "small" | "medium" | "large";
-
-export interface PresetConfig {
-  name: string;
-  cpu_cores: number;
-  memory_gb: number;
-  disk_gb: number;
-  description: string;
-}
-
-export const PRESET_CONFIGS: Record<string, PresetConfig> = {
+export const PRESET_CONFIGS = {
   small: {
     name: "Small",
     cpu_cores: 2,
@@ -277,67 +298,3 @@ export const PRESET_CONFIGS: Record<string, PresetConfig> = {
     description: "For heavy workloads",
   },
 };
-
-/** Lightweight presets for CLI-only / Shell-based runtimes (no desktop). */
-export const SHELL_PRESET_CONFIGS: Record<string, PresetConfig> = {
-  small: {
-    name: "Small",
-    cpu_cores: 0.5,
-    memory_gb: 1,
-    disk_gb: 5,
-    description: "Suitable for light tasks",
-  },
-  medium: {
-    name: "Medium",
-    cpu_cores: 1,
-    memory_gb: 2,
-    disk_gb: 10,
-    description: "Good for development",
-  },
-  large: {
-    name: "Large",
-    cpu_cores: 2,
-    memory_gb: 4,
-    disk_gb: 20,
-    description: "For heavy workloads",
-  },
-};
-
-export interface InstanceExternalAccess {
-  id: number;
-  instance_id: number;
-  enabled: boolean;
-  auth_mode: "share_link" | "password";
-  password_hint?: string;
-  expires_at?: string;
-  created_by?: number;
-  last_used_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export type ExternalAccessExpirationMode = "preset" | "custom" | "permanent";
-export type ExternalAccessExpirationPreset = "1h" | "24h" | "7d" | "30d";
-
-export interface ExternalAccessRequest {
-  expires_mode?: ExternalAccessExpirationMode;
-  expires_preset?: ExternalAccessExpirationPreset;
-  expires_at?: string;
-}
-
-export interface ExternalAccessStatusResult {
-  external_access?: InstanceExternalAccess | null;
-  share_url?: string;
-  password?: string;
-}
-
-export interface EnableShareLinkResult {
-  access: InstanceExternalAccess;
-  share_url?: string;
-}
-
-export interface PasswordExternalAccessResult {
-  access: InstanceExternalAccess;
-  password: string;
-  share_url?: string;
-}
