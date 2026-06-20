@@ -174,7 +174,7 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Host:     "localhost",
-			Port:     3307,
+			Port:     3306,
 			User:     "clawreef",
 			Password: "clawreef123",
 			Database: "clawreef",
@@ -215,6 +215,7 @@ func Load() (*Config, error) {
 					VolumeMode:           "Filesystem",
 					AllowVolumeExpansion: true,
 					ReclaimPolicy:        "Delete",
+					HostPathPrefix:       getEnv("K8S_PV_HOST_PATH_PREFIX", "/data/clawreef"),
 				},
 			},
 			Logging: LoggingConfig{
@@ -344,6 +345,9 @@ func applyEnvOverrides(config *Config) {
 	}
 	if storageClass := os.Getenv("K8S_STORAGE_CLASS"); storageClass != "" {
 		config.Kubernetes.Common.StorageClass = storageClass
+	}
+	if hostPathPrefix := os.Getenv("K8S_PV_HOST_PATH_PREFIX"); hostPathPrefix != "" {
+		config.Kubernetes.Runtime.PVC.HostPathPrefix = hostPathPrefix
 	}
 
 	config.Runtime.Namespace = getEnv("RUNTIME_NAMESPACE", getEnv("K8S_NAMESPACE", config.Runtime.Namespace))
