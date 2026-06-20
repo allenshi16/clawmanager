@@ -43,6 +43,8 @@ import ForkPage from '../pages/marketplace/ForkPage';
 import InstanceChatPage from '../pages/instances/InstanceChatPage';
 import ChannelsPage from '../pages/settings/ChannelsPage';
 import BillingPage from '../pages/billing/BillingPage';
+import AgentVariantManagementPage from '../pages/admin/AgentVariantManagementPage';
+import VariantVersionHistoryPage from '../pages/admin/VariantVersionHistoryPage';
 
 // Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -359,6 +361,18 @@ function AppRoutes() {
       <Route
         path="/billing"
         element={<ProtectedRoute><BillingPage /></ProtectedRoute>}
+      />
+      <Route
+        path="/admin/agent-variants"
+        element={<AdminRoute><AgentVariantManagementPage /></AdminRoute>}
+      />
+      <Route
+        path="/admin/agent-variants/:id/versions"
+        element={<AdminRoute><VariantVersionHistoryPage /></AdminRoute>}
+      />
+      <Route
+        path="/admin/billing"
+        element={<AdminRoute><BillingPage /></AdminRoute>}
       />
     </Routes>
   );
