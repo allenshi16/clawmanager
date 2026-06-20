@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
+  CreditCard,
   Home,
   LogOut,
   Monitor,
+  Plug,
   Settings,
   SlidersHorizontal,
+  Store,
   Users,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -38,8 +41,11 @@ const UserLayout: React.FC<UserLayoutProps> = ({ children, title }) => {
   const navItems: UserNavItem[] = [
     { path: '/dashboard', label: t('nav.userDashboard'), icon: Home, exact: true },
     { path: '/instances', label: t('nav.myInstances'), icon: Monitor },
+    { path: '/marketplace', label: t('nav.marketplace'), icon: Store },
     { path: '/teams', label: 'Teams', icon: Users },
     { path: '/openclaw-configs', label: t('nav.openClawConfigs'), icon: SlidersHorizontal },
+    { path: '/billing', label: t('nav.billing'), icon: CreditCard },
+    { path: '/settings/channels', label: t('nav.channels'), icon: Plug },
     { path: '/settings', label: t('nav.settings'), icon: Settings },
   ];
 

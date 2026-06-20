@@ -4,8 +4,10 @@ import {
   ArrowLeft,
   Bot,
   ChevronDown,
+  CreditCard,
   Gauge,
   Home,
+  Layers,
   LogOut,
   Monitor,
   Server,
@@ -55,6 +57,16 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children, title }) => {
       label: t('nav.aiGateway'),
       icon: Bot,
       matchPaths: ['/admin/models', '/admin/ai-audit', '/admin/costs', '/admin/risk-rules'],
+    },
+    {
+      path: '/admin/agent-variants',
+      label: t('nav.agentVariants'),
+      icon: Layers,
+    },
+    {
+      path: '/admin/billing',
+      label: t('nav.billingAdmin'),
+      icon: CreditCard,
     },
     { path: '/admin/settings', label: t('nav.settings'), icon: Settings },
   ];

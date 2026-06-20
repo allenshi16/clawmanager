@@ -1064,6 +1064,9 @@ export const translations: Record<Locale, TranslationTree> = {
       backToUserDashboard: "Workspace",
       securityCenter: "Security Center",
       adminPanel: "Admin Panel",
+      billing: "Billing",
+      channels: "Channels",
+      billingAdmin: "Billing Plans",
     },
     marketplace: {
       title: "Agent Marketplace",
@@ -2604,6 +2607,9 @@ export const translations: Record<Locale, TranslationTree> = {
       backToUserDashboard: "工作台",
       securityCenter: "安全中心",
       adminPanel: "管理后台",
+      billing: "计费",
+      channels: "渠道",
+      billingAdmin: "计费方案",
     },
     marketplace: {
       title: "智能体广场",
