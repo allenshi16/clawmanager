@@ -435,6 +435,7 @@ func main() {
 			adminModels.POST("/discover", llmModelHandler.DiscoverModels)
 			adminModels.PUT("", llmModelHandler.UpsertModel)
 			adminModels.DELETE("/:id", llmModelHandler.DeleteModel)
+			adminModels.POST("/:id/test", llmModelHandler.TestModel)
 		}
 
 		adminAIAudit := api.Group("/admin/ai-audit")
