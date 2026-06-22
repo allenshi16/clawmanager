@@ -3,6 +3,20 @@ import { DEFAULT_LOCALE, type Locale, interpolate, localeOptions, translate } fr
 
 const STORAGE_KEY = 'clawmanager_locale';
 
+const SUPPORTED_LOCALES: Locale[] = ['en', 'zh', 'ja', 'ko', 'de'];
+
+function detectBrowserLocale(): Locale {
+  try {
+    const raw = navigator.language;
+    if (SUPPORTED_LOCALES.includes(raw as Locale)) return raw as Locale;
+    const base = raw.split('-')[0];
+    if (SUPPORTED_LOCALES.includes(base as Locale)) return base as Locale;
+  } catch {
+    /* navigator unavailable */
+  }
+  return DEFAULT_LOCALE;
+}
+
 interface I18nContextValue {
   locale: Locale;
   setLocale: (locale: Locale) => void;
@@ -15,7 +29,7 @@ const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [locale, setLocaleState] = useState<Locale>(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY) as Locale | null;
-    return stored ?? DEFAULT_LOCALE;
+    return stored ?? detectBrowserLocale();
   });
 
   useEffect(() => {

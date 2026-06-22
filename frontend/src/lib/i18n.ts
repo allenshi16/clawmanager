@@ -1,6 +1,6 @@
 ﻿export type Locale = "en" | "zh" | "ja" | "ko" | "de";
 
-export const DEFAULT_LOCALE: Locale = "en";
+export const DEFAULT_LOCALE: Locale = "zh";
 
 interface TranslationTree {
   [key: string]: string | TranslationTree;
