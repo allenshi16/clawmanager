@@ -23,11 +23,11 @@ CREATE TABLE IF NOT EXISTS agent_variant_templates (
 
 INSERT INTO agent_variant_templates (name, slug, description, runtime_type, skill_ids, config_plan, icon, category, is_public)
 VALUES
-('Code Assistant', 'code-assistant', 'Your personal code reviewer and pair programmer. Specializes in debugging complex logic, suggesting refactors, and writing clean tests. Persona: meticulous senior engineer who explains reasoning step-by-step.', 'openclaw', '[]', '{"mode": "bundle"}', 'code', 'developer', TRUE),
-('Shell Expert', 'shell-expert', 'Command-line virtuoso and system administrator. Instantly writes shell scripts, troubleshoots server issues, and optimizes DevOps pipelines. Persona: seasoned sysadmin with a knack for one-liner solutions.', 'openclaw', '[]', '{"mode": "bundle"}', 'terminal', 'developer', TRUE),
-('Document Writer', 'document-writer', 'Technical communication specialist. Transforms rough notes into polished API docs, READMEs, and architecture guides. Persona: patient technical writer who values clarity over jargon.', 'openclaw', '[]', '{"mode": "bundle"}', 'file-text', 'creative', TRUE),
-('Research Analyst', 'research-analyst', 'Deep reasoning engine powered by Hermes kernel. Analyzes research papers, synthesizes findings, and constructs logical arguments. Persona: rigorous academic researcher with cross-domain expertise.', 'hermes', '[]', '{"mode": "bundle"}', 'brain', 'research', TRUE),
-('General Purpose', 'general-purpose', 'A blank-slate OpenClaw instance. No preset skills or personality — customize it entirely to your needs. Perfect for users who want full control over their agent configuration.', 'openclaw', '[]', NULL, 'bot', 'general', TRUE)
+('Code Assistant', 'code-assistant', '你的个人代码审查员和结对编程伙伴。擅长调试复杂逻辑、建议重构方案、编写干净测试。角色设定：严谨的高级工程师，善于逐步解释推理过程。', 'openclaw', '[]', '{"mode": "bundle"}', 'code', 'developer', TRUE),
+('Shell Expert', 'shell-expert', '命令行大师和系统管理员。快速编写 Shell 脚本、排查服务器问题、优化 DevOps 流程。角色设定：经验丰富的系统管理员，擅长一行命令解决问题。', 'openclaw', '[]', '{"mode": "bundle"}', 'terminal', 'developer', TRUE),
+('Document Writer', 'document-writer', '技术文档专家。将粗略笔记转化为精美的 API 文档、README 和架构指南。角色设定：耐心的技术写作专家，注重清晰而非术语堆砌。', 'openclaw', '[]', '{"mode": "bundle"}', 'file-text', 'creative', TRUE),
+('Research Analyst', 'research-analyst', '基于 Hermes 内核的深度推理引擎。分析研究论文、综合发现、构建逻辑论证。角色设定：严谨的学术研究者，具备跨领域专业知识。', 'hermes', '[]', '{"mode": "bundle"}', 'brain', 'research', TRUE),
+('General Purpose', 'general-purpose', '一个空白的 OpenClaw 实例。没有预设技能或个性——完全按你的需求定制。适合希望完全掌控智能体配置的用户。', 'openclaw', '[]', NULL, 'bot', 'general', TRUE)
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   description = VALUES(description),
