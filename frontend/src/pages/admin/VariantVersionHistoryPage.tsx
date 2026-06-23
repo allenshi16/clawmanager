@@ -3,8 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { agentVariantService } from '../../services/agentVariantService';
 import type { AgentVariantTemplate, AgentVariantTemplateVersion, VersionDiff } from '../../types/agentVariant';
 import { Clock, Hash, Loader2, ArrowLeft, Eye, History, GitCompare, RotateCcw, X, CheckCircle } from 'lucide-react';
+import { useI18n } from '../../contexts/I18nContext';
 
 const VariantVersionHistoryPage: React.FC = () => {
+  const { t } = useI18n();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [template, setTemplate] = useState<AgentVariantTemplate | null>(null);
@@ -30,7 +32,7 @@ const VariantVersionHistoryPage: React.FC = () => {
         setTemplate(t);
         setVersions(v);
       })
-      .catch((err) => setError(err.response?.data?.error || 'Failed to load version history'))
+      .catch((err) => setError(err.response?.data?.error || t('agentVariant.loadFailed')))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -52,15 +54,15 @@ const VariantVersionHistoryPage: React.FC = () => {
 
   const handleRollback = async (version: number) => {
     if (!id) return;
-    if (!window.confirm(`Restore version ${version}? This will create a new version with the snapshot from v${version}.`)) return;
+    if (!window.confirm(t('agentVariant.restoreConfirm', { version }))) return;
     setRollbackLoading(true);
     setRollbackMsg(null);
     try {
       await agentVariantService.restoreVersion(parseInt(id), version);
-      setRollbackMsg(`Version ${version} restored successfully. Refreshing...`);
+      setRollbackMsg(t('agentVariant.restoreSuccess', { version }));
       setTimeout(() => window.location.reload(), 1500);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to restore version');
+      setError(err.response?.data?.error || t('agentVariant.restoreFailed'));
     } finally {
       setRollbackLoading(false);
     }
@@ -83,7 +85,7 @@ const VariantVersionHistoryPage: React.FC = () => {
       <div className="p-6">
         <div className="flex items-center justify-center h-64">
           <Loader2 className="animate-spin w-6 h-6 text-[#ef4444]" />
-          <span className="ml-3 text-[#5f5957]">Loading version history...</span>
+          <span className="ml-3 text-[#5f5957]">{t('agentVariant.loading')}</span>
         </div>
       </div>
     );
@@ -97,7 +99,7 @@ const VariantVersionHistoryPage: React.FC = () => {
             <span>{error}</span>
           </div>
           <button onClick={() => navigate('/admin/agent-variants')} className="mt-4 flex items-center gap-2 text-sm text-[#8f8681] hover:text-[#171212]">
-            <ArrowLeft size={16} /> Back to Agent Variants
+            <ArrowLeft size={16} /> {t('agentVariant.backToList')}
           </button>
         </div>
       </div>
@@ -106,11 +108,11 @@ const VariantVersionHistoryPage: React.FC = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <button
+        <button
         onClick={() => navigate('/admin/agent-variants')}
         className="inline-flex items-center gap-2 text-sm text-[#8f8681] hover:text-[#171212] transition-colors mb-6"
       >
-        <ArrowLeft size={16} /> Back to Agent Variants
+        <ArrowLeft size={16} /> {t('agentVariant.backToList')}
       </button>
 
       <div className="flex items-start gap-4 mb-8">
@@ -118,9 +120,9 @@ const VariantVersionHistoryPage: React.FC = () => {
           <History size={24} />
         </div>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold text-[#171212]">Version History</h1>
+          <h1 className="text-2xl font-bold text-[#171212]">{t('agentVariant.versionHistory')}</h1>
           <p className="text-sm text-[#696363] mt-1">
-            {template?.name} &middot; v{template?.version} current
+            {template?.name} &middot; {t('agentVariant.currentVersion', { version: template?.version ?? '?' })}
           </p>
         </div>
       </div>
@@ -135,30 +137,30 @@ const VariantVersionHistoryPage: React.FC = () => {
       {versions.length >= 2 && (
         <div className="mb-8 border border-[#eadfd8] rounded-xl bg-white p-5">
           <h3 className="text-sm font-semibold text-[#171212] flex items-center gap-2 mb-4">
-            <GitCompare size={16} /> Compare Versions
+            <GitCompare size={16} /> {t('agentVariant.diff.compareVersions')}
           </h3>
           <div className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="block text-xs text-[#8f8681] mb-1">Version A (older)</label>
+              <label className="block text-xs text-[#8f8681] mb-1">{t('agentVariant.diff.versionA')}</label>
               <select
                 value={selectedV1 ?? ''}
                 onChange={(e) => setSelectedV1(e.target.value ? parseInt(e.target.value) : null)}
                 className="border border-[#eadfd8] rounded-lg px-3 py-2 text-sm bg-white text-[#171212]"
               >
-                <option value="">-- Select --</option>
+                <option value="">{t('agentVariant.diff.select')}</option>
                 {versions.map((v) => (
                   <option key={v.version} value={v.version}>v{v.version}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-xs text-[#8f8681] mb-1">Version B (newer)</label>
+              <label className="block text-xs text-[#8f8681] mb-1">{t('agentVariant.diff.versionB')}</label>
               <select
                 value={selectedV2 ?? ''}
                 onChange={(e) => setSelectedV2(e.target.value ? parseInt(e.target.value) : null)}
                 className="border border-[#eadfd8] rounded-lg px-3 py-2 text-sm bg-white text-[#171212]"
               >
-                <option value="">-- Select --</option>
+                <option value="">{t('agentVariant.diff.select')}</option>
                 {versions.map((v) => (
                   <option key={v.version} value={v.version}>v{v.version}</option>
                 ))}
@@ -170,7 +172,7 @@ const VariantVersionHistoryPage: React.FC = () => {
               className="px-4 py-2 bg-[#ef6b4a] text-white rounded-lg text-sm font-medium hover:bg-[#dc2626] disabled:opacity-50 transition-colors flex items-center gap-1.5"
             >
               {diffLoading ? <Loader2 className="animate-spin" size={14} /> : <GitCompare size={14} />}
-              Compare
+              {t('agentVariant.diff.compare')}
             </button>
             {diffResult && (
               <button onClick={clearDiff} className="px-3 py-2 border border-[#eadfd8] text-[#696363] rounded-lg text-sm hover:bg-[#fdf9f7]">
@@ -182,10 +184,10 @@ const VariantVersionHistoryPage: React.FC = () => {
           {diffResult && (
             <div className="mt-4 border-t border-[#f0eae4] pt-4">
               <p className="text-xs text-[#8f8681] mb-2">
-                {diffResult.change_count} change{diffResult.change_count !== 1 ? 's' : ''} between v{diffResult.version_a} and v{diffResult.version_b}
+                {t('agentVariant.diff.changeCount', { count: diffResult.change_count, a: diffResult.version_a, b: diffResult.version_b, pluralS: diffResult.change_count !== 1 ? 's' : '' })}
               </p>
               {diffResult.changes.length === 0 ? (
-                <p className="text-sm text-green-600">No differences found between these versions.</p>
+                <p className="text-sm text-green-600">{t('agentVariant.diff.noDifferences')}</p>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto">
                   {diffResult.changes.map((change, i) => (
@@ -212,7 +214,7 @@ const VariantVersionHistoryPage: React.FC = () => {
       {versions.length === 0 ? (
         <div className="text-center py-16">
           <History size={40} className="mx-auto text-[#d4cfcb] mb-3" />
-          <p className="text-[#8f8681]">No version history available</p>
+          <p className="text-[#8f8681]">{t('agentVariant.noVersionHistory')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -227,9 +229,9 @@ const VariantVersionHistoryPage: React.FC = () => {
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-[#171212]">Version {v.version}</span>
+                    <span className="font-semibold text-[#171212]">{t('agentVariant.versionLabel', { version: v.version })}</span>
                     {template && v.version === template.version && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-green-100 text-green-700 rounded-full">Current</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-green-100 text-green-700 rounded-full">{t('agentVariant.currentLabel')}</span>
                     )}
                   </div>
                   <div className="flex items-center gap-1 mt-0.5 text-xs text-[#8f8681]">
@@ -244,19 +246,19 @@ const VariantVersionHistoryPage: React.FC = () => {
                     onClick={() => handleRollback(v.version)}
                     disabled={rollbackLoading}
                     className="flex items-center gap-1.5 text-xs font-medium text-[#696363] hover:text-[#ef6b4a] transition-colors px-3 py-1.5 rounded-lg hover:bg-[#fdf9f7] disabled:opacity-50"
-                    title="Restore this version"
+                    title={t('agentVariant.diff.restoreTitle')}
                   >
                     {rollbackLoading ? <Loader2 className="animate-spin" size={14} /> : <RotateCcw size={14} />}
-                    Restore
+                    {t('agentVariant.diff.restore')}
                   </button>
                 )}
                 <button
                   onClick={() => {}}
                   className="flex items-center gap-1.5 text-xs font-medium text-[#696363] hover:text-[#ef6b4a] transition-colors px-3 py-1.5 rounded-lg hover:bg-[#fdf9f7]"
-                  title="View snapshot"
+                  title={t('agentVariant.diff.viewSnapshot')}
                 >
                   <Eye size={14} />
-                  Details
+                  {t('agentVariant.diff.details')}
                 </button>
               </div>
             </div>
