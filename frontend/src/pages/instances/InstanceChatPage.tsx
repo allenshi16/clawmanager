@@ -11,7 +11,7 @@ import { instanceService } from "../../services/instanceService";
 import {
   chatCompletionsStream,
   type ChatMessage,
-} from "../../services/chatService";
+} from "../../services/agentChatService";
 import type { Instance } from "../../types/instance";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";

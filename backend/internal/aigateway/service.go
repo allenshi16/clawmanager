@@ -289,10 +289,10 @@ type service struct {
 	chatSessionService services.ChatSessionService
 	chatMessageService services.ChatMessageService
 	secretRefService   services.SecretRefService
+	skillRepo          repository.SkillRepository
 	httpClient         *http.Client
 }
 
-// NewService creates a new AI gateway service.
 func NewService(
 	modelRepo repository.LLMModelRepository,
 	invocationService services.ModelInvocationService,
@@ -302,6 +302,7 @@ func NewService(
 	riskHitService services.RiskHitService,
 	chatSessionService services.ChatSessionService,
 	chatMessageService services.ChatMessageService,
+	skillRepo repository.SkillRepository,
 ) Service {
 	return &service{
 		modelRepo:          modelRepo,
@@ -313,6 +314,7 @@ func NewService(
 		chatSessionService: chatSessionService,
 		chatMessageService: chatMessageService,
 		secretRefService:   services.NewSecretRefService(),
+		skillRepo:          skillRepo,
 		httpClient: &http.Client{
 			Timeout: 90 * time.Second,
 		},
@@ -409,6 +411,49 @@ func (s *service) StreamChatCompletions(ctx context.Context, userID int, req Cha
 	}
 }
 
+func (s *service) injectSkillSystemPrompt(messages []ChatMessage, instanceID *int) []ChatMessage {
+	if instanceID == nil || s.skillRepo == nil {
+		return messages
+	}
+	instanceSkills, err := s.skillRepo.ListInstanceSkills(*instanceID)
+	if err != nil || len(instanceSkills) == 0 {
+		return messages
+	}
+	var skillDescriptions []string
+	for _, is := range instanceSkills {
+		if is.Status != "active" {
+			continue
+		}
+		skill, err := s.skillRepo.GetSkillByID(is.SkillID)
+		if err != nil || skill == nil {
+			continue
+		}
+		desc := skill.Name
+		if skill.Description != nil && strings.TrimSpace(*skill.Description) != "" {
+			desc = strings.TrimSpace(*skill.Description)
+		}
+		skillDescriptions = append(skillDescriptions, fmt.Sprintf("- %s: %s", skill.SkillKey, desc))
+	}
+	if len(skillDescriptions) == 0 {
+		return messages
+	}
+	systemPrompt := fmt.Sprintf("你具备以下技能，用户可能会请求你执行相关任务：\n%s\n当用户的请求匹配某个技能时，请按照技能描述执行。", strings.Join(skillDescriptions, "\n"))
+	hasSystem := false
+	for i, msg := range messages {
+		if msg.Role == "system" {
+			if content, ok := msg.Content.(string); ok {
+				messages[i].Content = systemPrompt + "\n\n" + content
+				hasSystem = true
+			}
+			break
+		}
+	}
+	if !hasSystem {
+		messages = append([]ChatMessage{{Role: "system", Content: systemPrompt}}, messages...)
+	}
+	return messages
+}
+
 func (s *service) prepareChatRequest(userID int, req ChatCompletionRequest) (*preparedChatRequest, error) {
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, errors.New("model is required")
@@ -416,6 +461,8 @@ func (s *service) prepareChatRequest(userID int, req ChatCompletionRequest) (*pr
 	if len(req.Messages) == 0 {
 		return nil, errors.New("messages are required")
 	}
+
+	req.Messages = s.injectSkillSystemPrompt(req.Messages, req.InstanceID)
 
 	requestedModel := strings.TrimSpace(req.Model)
 	selectedModel, err := s.resolveRequestedModel(requestedModel)
@@ -599,6 +646,15 @@ func (s *service) callOpenAICompatible(ctx context.Context, prepared *preparedCh
 	if err := json.Unmarshal(responseBody, &providerResponse); err != nil {
 		s.recordSuccess(prepared, providerRequestBody, string(responseBody), "", 0, 0, 0, int(time.Since(startedAt).Milliseconds()), false)
 		return proxyResponse, prepared.traceID, nil
+	}
+
+	// Merge reasoning_content into content for non-streaming responses
+	// so clients that only inspect content receive the full text.
+	if normalizedBody, ok := normalizeReasoningContentInResponse(responseBody); ok {
+		proxyResponse.Body = normalizedBody
+		if err := json.Unmarshal(normalizedBody, &providerResponse); err != nil {
+			proxyResponse.Body = responseBody
+		}
 	}
 
 	assistantContent := extractAssistantContent(providerResponse)
@@ -911,7 +967,12 @@ func (s *service) streamOpenAICompatible(ctx context.Context, prepared *prepared
 		if line != "" {
 			done := inspectStreamLine(line, &assistantText, &promptTokens, &completionTokens, &totalTokens)
 			rawStream.WriteString(line)
-			if _, err := io.WriteString(w, line); err == nil {
+			// Normalize the SSE line: merge reasoning_content into content
+			// so that clients expecting only content (e.g. OpenClaw agent)
+			// receive text in every chunk instead of empty content with
+			// a non-standard reasoning_content field.
+			normalizedLine := normalizeReasoningContentInStreamLine(line)
+			if _, err := io.WriteString(w, normalizedLine); err == nil {
 				flusher.Flush()
 			}
 			if done {
@@ -1094,6 +1155,163 @@ func (s *service) streamAnthropic(ctx context.Context, prepared *preparedChatReq
 		s.recordSuccess(prepared, providerRequestBody, normalizedStream, assistantContent, state.PromptTokens, state.CompletionTokens, state.PromptTokens+state.CompletionTokens, int(time.Since(startedAt).Milliseconds()), true)
 	}
 	return nil
+}
+
+// normalizeReasoningContentInStreamLine merges reasoning_content into content
+// for OpenAI-compatible streaming chunks. Some providers (e.g. DeepSeek)
+// emit a non-standard "reasoning_content" field in delta objects while
+// leaving "content" as an empty string. Clients that only inspect
+// "content" (such as OpenClaw's openai-completions provider) will see
+// empty text and report the assistant turn as failed. This function
+// patches each SSE data line so that reasoning_content is appended to
+// content and the reasoning_content key is removed, making the stream
+// consumable by any OpenAI-compatible client.
+func normalizeReasoningContentInResponse(body []byte) ([]byte, bool) {
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, false
+	}
+
+	choicesRaw, ok := resp["choices"]
+	if !ok {
+		return nil, false
+	}
+
+	var choices []map[string]json.RawMessage
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil {
+		return nil, false
+	}
+
+	changed := false
+	for i, choice := range choices {
+		msgRaw, ok := choice["message"]
+		if !ok {
+			continue
+		}
+
+		var msg map[string]json.RawMessage
+		if err := json.Unmarshal(msgRaw, &msg); err != nil {
+			continue
+		}
+
+		reasoningRaw, hasReasoning := msg["reasoning_content"]
+		if !hasReasoning {
+			continue
+		}
+
+		var reasoningStr string
+		if err := json.Unmarshal(reasoningRaw, &reasoningStr); err != nil || reasoningStr == "" {
+			continue
+		}
+
+		var contentStr string
+		if contentRaw, hasContent := msg["content"]; hasContent {
+			_ = json.Unmarshal(contentRaw, &contentStr)
+		}
+
+		merged := contentStr + reasoningStr
+		mergedJSON, _ := json.Marshal(merged)
+		msg["content"] = mergedJSON
+		delete(msg, "reasoning_content")
+
+		newMsgRaw, _ := json.Marshal(msg)
+		choice["message"] = newMsgRaw
+		choices[i] = choice
+		changed = true
+	}
+
+	if !changed {
+		return nil, false
+	}
+
+	newChoicesRaw, _ := json.Marshal(choices)
+	resp["choices"] = newChoicesRaw
+
+	normalized, err := json.Marshal(resp)
+	if err != nil {
+		return nil, false
+	}
+
+	return normalized, true
+}
+
+func normalizeReasoningContentInStreamLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "data:") {
+		return line
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return line
+	}
+
+	var chunk map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return line
+	}
+
+	choicesRaw, ok := chunk["choices"]
+	if !ok {
+		return line
+	}
+
+	var choices []map[string]json.RawMessage
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil {
+		return line
+	}
+
+	changed := false
+	for i, choice := range choices {
+		deltaRaw, ok := choice["delta"]
+		if !ok {
+			continue
+		}
+
+		var delta map[string]json.RawMessage
+		if err := json.Unmarshal(deltaRaw, &delta); err != nil {
+			continue
+		}
+
+		reasoningRaw, hasReasoning := delta["reasoning_content"]
+		if !hasReasoning {
+			continue
+		}
+
+		var reasoningStr string
+		if err := json.Unmarshal(reasoningRaw, &reasoningStr); err != nil || reasoningStr == "" {
+			continue
+		}
+
+		var contentStr string
+		if contentRaw, hasContent := delta["content"]; hasContent {
+			_ = json.Unmarshal(contentRaw, &contentStr)
+		}
+
+		merged := contentStr + reasoningStr
+		mergedJSON, _ := json.Marshal(merged)
+		delta["content"] = mergedJSON
+		delete(delta, "reasoning_content")
+
+		newDeltaRaw, _ := json.Marshal(delta)
+		choice["delta"] = newDeltaRaw
+		choices[i] = choice
+		changed = true
+	}
+
+	if !changed {
+		return line
+	}
+
+	newChoicesRaw, _ := json.Marshal(choices)
+	chunk["choices"] = newChoicesRaw
+
+	normalized, err := json.Marshal(chunk)
+	if err != nil {
+		return line
+	}
+
+	prefix := line[:strings.Index(line, "data:")+len("data:")]
+	return prefix + " " + string(normalized) + "\n"
 }
 
 func inspectStreamLine(line string, assistantText *strings.Builder, promptTokens, completionTokens, totalTokens *int) bool {
@@ -1987,7 +2205,13 @@ func (s *service) selectAutoModel() (*models.LLMModel, error) {
 }
 
 func isAutoModelRequest(requestedModel string) bool {
-	return strings.EqualFold(strings.TrimSpace(requestedModel), autoModelID)
+	trimmed := strings.TrimSpace(requestedModel)
+	if strings.EqualFold(trimmed, autoModelID) {
+		return true
+	}
+	// The ClawManager frontend sends "default" as the model name when the user
+	// does not explicitly select a model. Treat it as an auto-select request.
+	return strings.EqualFold(trimmed, "default")
 }
 
 func calculateEstimatedCost(model *models.LLMModel, promptTokens, completionTokens int) float64 {

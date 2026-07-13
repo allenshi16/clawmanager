@@ -731,7 +731,7 @@ func (s *RuntimeScheduler) createGatewayOnPod(ctx context.Context, instance mode
 		},
 		UID:         uid,
 		GID:         gid,
-		CPUCores:    instance.CPUCores,
+		CPUCores:    int(instance.CPUCores),
 		MemoryMB:    instance.MemoryGB * 1024,
 		DiskQuotaMB: instance.DiskGB * 1024,
 		Generation:  instance.RuntimeGeneration,

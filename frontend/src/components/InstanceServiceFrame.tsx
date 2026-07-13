@@ -22,9 +22,6 @@ function resolveEmbedUrl(url: string | null) {
   if (explicitOrigin) {
     return new URL(url, explicitOrigin).toString();
   }
-  if (window.location.port === "9002" && url.startsWith("/api/")) {
-    return `${window.location.protocol}//${window.location.hostname}:9001${url}`;
-  }
   return url;
 }
 

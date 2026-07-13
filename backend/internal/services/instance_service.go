@@ -949,16 +949,45 @@ func (s *instanceService) buildGatewayEnv(instance *models.Instance) (map[string
 	}
 
 	token := strings.TrimSpace(*instance.AccessToken)
+
+	providerConfig := map[string]interface{}{
+		"api":     "openai-completions",
+		"apiKey":  token,
+		"auth":    "api-key",
+		"baseUrl": baseURL,
+		"models":  buildProviderModels(modelInjection),
+	}
+	configOverride := map[string]interface{}{
+		"models": map[string]interface{}{
+			"providers": map[string]interface{}{
+				"openai": providerConfig,
+			},
+		},
+		"agents": map[string]interface{}{
+			"defaults": map[string]interface{}{
+				"model": map[string]interface{}{
+					"primary": "openai/" + modelInjection.defaultModel,
+				},
+				"models": map[string]interface{}{
+					"openai/" + modelInjection.defaultModel: map[string]interface{}{},
+				},
+			},
+		},
+	}
+	configOverrideJSON, _ := json.Marshal(configOverride)
+
 	return map[string]string{
-		"CLAWMANAGER_LLM_BASE_URL":   baseURL,
-		"CLAWMANAGER_LLM_API_KEY":    token,
-		"CLAWMANAGER_LLM_MODEL":      modelInjection.modelsJSON,
-		"CLAWMANAGER_LLM_PROVIDER":   "openai-compatible",
-		"CLAWMANAGER_INSTANCE_TOKEN": token,
-		"OPENAI_BASE_URL":            baseURL,
-		"OPENAI_API_BASE":            baseURL,
-		"OPENAI_API_KEY":             token,
-		"OPENAI_MODEL":               modelInjection.defaultModel,
+		"CLAWMANAGER_LLM_BASE_URL":         baseURL,
+		"CLAWMANAGER_LLM_API_KEY":          token,
+		"CLAWMANAGER_LLM_MODEL":            modelInjection.modelsJSON,
+		"CLAWMANAGER_LLM_PROVIDER":         "openai-compatible",
+		"CLAWMANAGER_INSTANCE_TOKEN":       token,
+		"OPENAI_BASE_URL":                  baseURL,
+		"OPENAI_API_BASE":                  baseURL,
+		"OPENAI_API_KEY":                   token,
+		"OPENAI_MODEL":                     modelInjection.defaultModel,
+		"CLAWMANAGER_OPENCLAW_CONFIG_JSON": string(configOverrideJSON),
+		"CLAWMANAGER_NO_PROXY":             "10.42.0.0/16,10.43.0.0/16,localhost,127.0.0.1,::1",
 	}, nil
 }
 
@@ -1140,6 +1169,28 @@ func (s *instanceService) resolveGatewayModelInjection() (*gatewayModelInjection
 		defaultModel: "auto",
 		modelsJSON:   string(rawModels),
 	}, nil
+}
+
+func buildProviderModels(injection *gatewayModelInjection) []map[string]interface{} {
+	models := []map[string]interface{}{}
+	for _, name := range strings.Split(strings.Trim(injection.modelsJSON, "[]\""), ",") {
+		name = strings.TrimSpace(strings.Trim(name, "\""))
+		if name == "" {
+			continue
+		}
+		models = append(models, map[string]interface{}{
+			"id":            name,
+			"name":          strings.Title(name),
+			"contextWindow": 1000000,
+			"maxTokens":     65536,
+			"input":         []string{"text"},
+			"reasoning":     false,
+			"cost": map[string]interface{}{
+				"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+			},
+		})
+	}
+	return models
 }
 
 func mergeEnvMaps(base map[string]string, overlay map[string]string) map[string]string {

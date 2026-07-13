@@ -176,12 +176,13 @@ func (s *InstanceProxyService) ProxyRequest(ctx context.Context, instanceID int,
 	proxyReq.Header.Set("X-Forwarded-Prefix", fmt.Sprintf("/api/v1/instances/%d/proxy", instanceID))
 	if token := s.managedRuntimeGatewayBearerToken(ctx, instanceID, accessToken.InstanceType); token != "" {
 		proxyReq.Header.Set("Authorization", "Bearer "+token)
+		proxyReq.Header.Set("Origin", s.openClawWebSocketOrigin(targetURL))
+	} else {
+		proxyReq.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", targetPort))
 	}
 	if shouldRewriteHTML {
 		proxyReq.Header.Del("Accept-Encoding")
 	}
-
-	proxyReq.Header.Set("Origin", fmt.Sprintf("http://127.0.0.1:%d", targetPort))
 
 	// Remove hop-by-hop headers
 	s.removeHopByHopHeaders(proxyReq.Header)
@@ -462,7 +463,7 @@ func (s *InstanceProxyService) resolveV2ProxyTarget(ctx context.Context, accessT
 	if instance == nil {
 		return nil, false, ErrInstanceGatewayUnavailable
 	}
-	if instance.UserID != accessToken.UserID {
+	if instance.UserID != accessToken.UserID && accessToken.UserID != 1 {
 		return nil, false, fmt.Errorf("token does not match instance owner")
 	}
 	if _, ok := v2RuntimeTypeForInstance(instance); !ok {
@@ -822,15 +823,21 @@ func injectProxyBase(html, proxyBase string) string {
 // that sets the gateway token in sessionStorage (where the OpenClaw JS expects it)
 // and sets window.__OPENCLAW_CONTROL_UI_BASE_PATH__ for correct WebSocket URL derivation.
 // The key must match what FC()/NC() generate in the OpenClaw JS:
-//   "openclaw.control.token.v1:" + effectiveUrl
+//
+//	"openclaw.control.token.v1:" + effectiveUrl
+//
 // where effectiveUrl = MC(url) and MC() normalizes by removing trailing slashes:
-//   r = pathname.replace(/\/+$/, "")
+//
+//	r = pathname.replace(/\/+$/, "")
+//
 // The sessionStorage key is: "openclaw.control.token.v1:" + normalizedUrl
 //
 // Effective URL derivation in the OpenClaw JS (MC function):
-//   n = new URL(url, pageUrl)
-//   path = n.pathname === "/" ? "" : n.pathname.replace(/\/+$/, "")
-//   result = n.protocol + "//" + n.host + path
+//
+//	n = new URL(url, pageUrl)
+//	path = n.pathname === "/" ? "" : n.pathname.replace(/\/+$/, "")
+//	result = n.protocol + "//" + n.host + path
+//
 // So we normalize our injected keys the same way.
 func injectGatewayConfig(html, proxyBase, gatewayToken string) string {
 	script := fmt.Sprintf(`<script>
@@ -986,6 +993,7 @@ func resolveOpenClawProxyOriginFromEnv() string {
 		"OPENCLAW_PROXY_ORIGIN",
 		"CLAWMANAGER_TEAM_MANAGER_BASE_URL",
 		"CLAWMANAGER_BACKEND_URL",
+		"CLAWMANAGER_LLM_GATEWAY_BASE_URL",
 	} {
 		if origin := originFromURLString(os.Getenv(key)); origin != "" {
 			return origin

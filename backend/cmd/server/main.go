@@ -143,7 +143,7 @@ func main() {
 	channelService := services.NewChannelService(channelRepo, instanceCommandService)
 	billingService := services.NewBillingService(billingRepo, costRecordRepo)
 	variantTemplateService := services.NewAgentVariantTemplateService(variantTemplateRepo, variantTemplateVersionRepo)
-	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService)
+	aiGatewayService := aigateway.NewService(llmModelRepo, modelInvocationService, auditEventService, costRecordService, riskDetectionService, riskHitService, chatSessionService, chatMessageService, skillRepo)
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService)
@@ -312,6 +312,7 @@ func main() {
 			instances.POST("/:id/config/revisions/publish", instanceHandler.PublishConfigRevision)
 			instances.POST("/:id/access", instanceHandler.GenerateAccessToken)
 			instances.GET("/:id/access", instanceHandler.AccessInstance)
+			instances.GET("/:id/chat-config", instanceHandler.GetChatConfig)
 			instances.GET("/:id/shell", instanceHandler.StreamShell)
 			instances.POST("/:id/sync", instanceHandler.ForceSync)
 			instances.GET("/:id/openclaw/export", instanceHandler.ExportOpenClaw)
@@ -493,6 +494,7 @@ func main() {
 		{
 			gatewayLLM.GET("/models", aiGatewayHandler.ListModels)
 			gatewayLLM.POST("/chat/completions", aiGatewayHandler.ChatCompletions)
+			gatewayLLM.POST("/v1/chat/completions", aiGatewayHandler.ChatCompletions)
 		}
 
 		agent := api.Group("/agent")

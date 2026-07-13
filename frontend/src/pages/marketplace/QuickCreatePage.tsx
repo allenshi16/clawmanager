@@ -5,7 +5,7 @@ import { useI18n } from '../../contexts/I18nContext';
 import { agentVariantService } from '../../services/agentVariantService';
 import { instanceService } from '../../services/instanceService';
 import type { AgentVariantTemplate } from '../../types/agentVariant';
-import { Cpu, HardDrive, MemoryStick, Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
+import { Cpu, HardDrive, MemoryStick, Loader2, AlertCircle, ArrowLeft, Package } from 'lucide-react';
 
 const QuickCreatePage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
@@ -45,6 +45,8 @@ const QuickCreatePage: React.FC = () => {
         name: instanceName.trim(),
         type: variant.runtime_type as any,
         variant_id: variant.id,
+        skill_ids: variant.skill_ids?.length ? variant.skill_ids : undefined,
+        openclaw_config_plan: variant.config_plan?.mode ? variant.config_plan as any : undefined,
         cpu_cores: cpu,
         memory_gb: memory,
         disk_gb: disk,
@@ -122,6 +124,14 @@ const QuickCreatePage: React.FC = () => {
               {variant.image_registry && (
                 <div className="mt-2 text-xs text-[#8f8681] font-mono">
                   {variant.image_registry}{variant.image_tag ? `:${variant.image_tag}` : ''}
+                </div>
+              )}
+              {variant.skill_ids && variant.skill_ids.length > 0 && (
+                <div className="mt-3 flex items-center gap-2">
+                  <Package size={14} className="text-[#b46c50]" />
+                  <span className="text-xs text-[#696363]">
+                    预置 {variant.skill_ids.length} 个技能
+                  </span>
                 </div>
               )}
             </div>

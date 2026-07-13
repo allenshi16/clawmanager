@@ -317,6 +317,9 @@ func defaultNoProxyList() string {
 	serviceNames := []string{
 		"localhost",
 		"127.0.0.1",
+		"::1",
+		"10.42.0.0/16",
+		"10.43.0.0/16",
 		"clawmanager-frontend",
 		"clawmanager-gateway",
 		"clawmanager-egress-proxy",

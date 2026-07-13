@@ -21,7 +21,7 @@ const CATEGORIES = [
 const LandingPage: React.FC = () => {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [variants, setVariants] = useState<AgentVariantTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,13 +85,17 @@ const LandingPage: React.FC = () => {
         type: variant.runtime_type as any,
         variant_id: variant.id,
         name: t('landing.trialInstanceName', { name: variant.name }),
+        mode: 'lite',
+        instance_mode: 'lite',
+        skill_ids: variant.skill_ids?.length ? variant.skill_ids : undefined,
+        openclaw_config_plan: variant.config_plan?.mode ? variant.config_plan as any : undefined,
         cpu_cores: 1,
-        memory_gb: 2,
-        disk_gb: 20,
+        memory_gb: 1,
+        disk_gb: 10,
         os_type: 'ubuntu',
         os_version: '22.04',
       });
-      navigate(`/instances/${instance.id}`);
+      navigate(`/instances/${instance.id}/chat`);
     } catch (err: any) {
       const msg = err.response?.data?.error || err.message || t('landing.createFailed');
       setTrialError(msg);
@@ -139,10 +143,10 @@ const LandingPage: React.FC = () => {
             </button>
             {isAuthenticated && (
               <button
-                onClick={() => navigate('/dashboard')}
+                onClick={() => navigate(user?.role === 'admin' ? '/admin' : '/dashboard')}
                 className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-bold transition-all cursor-pointer"
               >
-                {t('landing.enterConsole')}
+                {user?.role === 'admin' ? t('landing.enterConsole') : t('landing.myInstances')}
               </button>
             )}
           </div>

@@ -7,6 +7,7 @@ import { userService } from '../../services/userService';
 import { instanceService } from '../../services/instanceService';
 import type { UserQuota } from '../../types/user';
 import type { Instance } from '../../types/instance';
+import { MessageSquare, Bell, Plus, Zap } from 'lucide-react';
 
 const UserDashboard: React.FC = () => {
   const { user } = useAuth();
@@ -138,21 +139,32 @@ const UserDashboard: React.FC = () => {
               <ul className="divide-y divide-[#f1e7e1]">
                 {recentInstances.slice(0, 5).map((instance) => (
                   <li key={instance.id} className="px-4 py-4 hover:bg-[#fff8f5]">
-                    <Link to={`/instances/${instance.id}`} className="flex items-center justify-between">
-                      <div>
+                    <div className="flex items-center justify-between">
+                      <Link to={`/instances/${instance.id}`} className="flex-1">
                         <h3 className="text-sm font-medium text-[#dc2626]">{instance.name}</h3>
                         <p className="text-sm text-gray-500">
                           {instance.type} • {instance.cpu_cores} CPU • {instance.memory_gb} GB RAM
                         </p>
+                      </Link>
+                      <div className="flex items-center gap-3">
+                        {instance.status === 'running' && (
+                          <Link
+                            to={`/instances/${instance.id}/chat`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors text-sm font-medium"
+                          >
+                            <MessageSquare size={16} />
+                            聊天
+                          </Link>
+                        )}
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          instance.status === 'running' ? 'bg-green-100 text-green-800' :
+                          instance.status === 'stopped' ? 'bg-gray-100 text-gray-800' :
+                          'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {t(`status.${instance.status}`)}
+                        </span>
                       </div>
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        instance.status === 'running' ? 'bg-green-100 text-green-800' :
-                        instance.status === 'stopped' ? 'bg-gray-100 text-gray-800' :
-                        'bg-yellow-100 text-yellow-800'
-                      }`}>
-                        {t(`status.${instance.status}`)}
-                      </span>
-                    </Link>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -164,17 +176,17 @@ const UserDashboard: React.FC = () => {
         <div>
           <h2 className="text-lg font-medium text-gray-900 mb-4">{t('userDashboard.quickActions')}</h2>
           <div className="flex flex-wrap gap-4">
-            <Link to="/instances/new" className="app-button-primary text-base">
-              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
+            <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[linear-gradient(135deg,#ef6b4a_0%,#dc2626_100%)] text-white font-semibold shadow-[0_18px_32px_-24px_rgba(220,38,38,0.6)] hover:translate-y-[-1px] transition-all text-sm">
+              <Zap size={18} />
+              选择智能体
+            </Link>
+            <Link to="/instances/new" className="app-button-secondary text-base">
+              <Plus size={18} className="mr-2" />
               {t('userDashboard.createNewInstance')}
             </Link>
-            <Link to="/instances" className="app-button-secondary text-base">
-              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-              </svg>
-              {t('userDashboard.viewAllInstances')}
+            <Link to="/settings/channels" className="app-button-secondary text-base">
+              <Bell size={18} className="mr-2" />
+              通知设置
             </Link>
           </div>
         </div>
@@ -201,11 +213,13 @@ const UserDashboard: React.FC = () => {
             <p className="mt-2 text-gray-500 max-w-sm mx-auto">
               {t('userDashboard.noInstancesSubtitle')}
             </p>
-            <div className="mt-6">
-              <Link to="/instances/new" className="app-button-primary text-base">
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
+            <div className="mt-6 flex flex-wrap gap-4 justify-center">
+              <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[linear-gradient(135deg,#ef6b4a_0%,#dc2626_100%)] text-white font-semibold shadow-[0_18px_32px_-24px_rgba(220,38,38,0.6)] hover:translate-y-[-1px] transition-all text-sm">
+                <Zap size={18} />
+                选择智能体
+              </Link>
+              <Link to="/instances/new" className="app-button-secondary text-base">
+                <Plus size={18} className="mr-2" />
                 {t('userDashboard.createInstance')}
               </Link>
             </div>
